@@ -1,10 +1,13 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
 
 #include <osmocom/core/backtrace.h>
 #include <osmocom/core/talloc.h>
 #include <osmocom/core/panic.h>
+#include <osmocom/core/defs.h>
 
 /*! \defgroup utils General-purpose utility functions
  *  @{
@@ -30,10 +33,6 @@
 /*! Copy a C-string into a sized buffer using sizeof to detect buffer's size */
 #define OSMO_STRLCPY_ARRAY(array, src) osmo_strlcpy(array, src, sizeof(array))
 
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-
 /*! A mapping between human-readable string and numeric value */
 struct value_string {
 	unsigned int value;	/*!< numeric value */
@@ -50,17 +49,32 @@ char osmo_bcd2char(uint8_t bcd);
 /* only works for numbers in ascci */
 uint8_t osmo_char2bcd(char c);
 
+int osmo_bcd2str(char *dst, size_t dst_size, const uint8_t *bcd, int start_nibble, int end_nibble, bool allow_hex);
+
 int osmo_hexparse(const char *str, uint8_t *b, int max_len);
 
 char *osmo_ubit_dump(const uint8_t *bits, unsigned int len);
 char *osmo_hexdump(const unsigned char *buf, int len);
 char *osmo_hexdump_nospc(const unsigned char *buf, int len);
+const char *osmo_hexdump_buf(char *out_buf, size_t out_buf_size, const unsigned char *buf, int len, const char *delim,
+			     bool delim_after_last);
+
 char *osmo_osmo_hexdump_nospc(const unsigned char *buf, int len) __attribute__((__deprecated__));
 
 #define osmo_static_assert(exp, name) typedef int dummy##name [(exp) ? 1 : -1] __attribute__((__unused__));
 
-void osmo_str2lower(char *out, const char *in);
-void osmo_str2upper(char *out, const char *in);
+void osmo_str2lower(char *out, const char *in)
+	OSMO_DEPRECATED("Use osmo_str_tolower() or osmo_str_tolower_buf() instead,"
+			" to properly check target memory bounds");
+void osmo_str2upper(char *out, const char *in)
+	OSMO_DEPRECATED("Use osmo_str_toupper() or osmo_str_toupper_buf() instead,"
+			" to properly check target memory bounds");
+
+size_t osmo_str_tolower_buf(char *dest, size_t dest_len, const char *src);
+const char *osmo_str_tolower(const char *src);
+
+size_t osmo_str_toupper_buf(char *dest, size_t dest_len, const char *src);
+const char *osmo_str_toupper(const char *src);
 
 #define OSMO_SNPRINTF_RET(ret, rem, offset, len)		\
 do {								\
@@ -78,7 +92,7 @@ do {								\
  */
 #define OSMO_ASSERT(exp)    \
 	if (!(exp)) { \
-		osmo_panic("Assert failed %s %s:%d\n", #exp, __BASE_FILE__, __LINE__); \
+		osmo_panic("Assert failed %s %s:%d\n", #exp, __FILE__, __LINE__); \
 	}
 
 /*! duplicate a string using talloc and release its prior content (if any)
@@ -128,5 +142,7 @@ const char *osmo_quote_str(const char *str, int in_len);
 const char *osmo_quote_str_buf(const char *str, int in_len, char *buf, size_t bufsize);
 
 uint32_t osmo_isqrt32(uint32_t x);
+
+const char osmo_luhn(const char* in, int in_len);
 
 /*! @} */

@@ -34,9 +34,6 @@
  *  message generation/encoding.
  */
 
-#define BSSMAP_MSG_SIZE 512
-#define BSSMAP_MSG_HEADROOM 128
-
 /*! Create "Complete L3 Info" for AoIP, legacy implementation.
  * Instead use gsm0808_create_layer3_aoip2(), which is capable of three-digit MNC with leading zeros.
  *  \param[in] msg_l3 msgb containing Layer 3 Message
@@ -144,7 +141,7 @@ struct msgb *gsm0808_create_reset(void)
 		return NULL;
 
 	msgb_v_put(msg, BSS_MAP_MSG_RESET);
-	msgb_tlv_put(msg, GSM0808_IE_CAUSE, 1, &cause);
+	gsm0808_enc_cause(msg, cause);
 	msg->l3h = msgb_tv_push(msg, BSSAP_MSG_BSS_MANAGEMENT, msgb_length(msg));
 
 	return msg;
@@ -182,9 +179,9 @@ struct msgb *gsm0808_create_clear_complete(void)
 }
 
 /*! Create BSSMAP Clear Command message
- *  \param[in] reason TS 08.08 cause value
+ *  \param[in] cause TS 08.08 cause value
  *  \returns callee-allocated msgb with BSSMAP Clear Command message */
-struct msgb *gsm0808_create_clear_command(uint8_t reason)
+struct msgb *gsm0808_create_clear_command(uint8_t cause)
 {
 	struct msgb *msg = msgb_alloc_headroom(BSSMAP_MSG_SIZE, BSSMAP_MSG_HEADROOM,
 					       "bssmap: clear command");
@@ -193,7 +190,23 @@ struct msgb *gsm0808_create_clear_command(uint8_t reason)
 
 	msg->l3h = msgb_tv_put(msg, BSSAP_MSG_BSS_MANAGEMENT, 4);
 	msgb_v_put(msg, BSS_MAP_MSG_CLEAR_CMD);
-	msgb_tlv_put(msg, GSM0808_IE_CAUSE, 1, &reason);
+	gsm0808_enc_cause(msg, cause);
+
+	return msg;
+}
+
+/*! Create BSSMAP Clear Command message.
+ *  \param[in] cause TS 08.08 cause value.
+ *  \param[in] csfb_ind indicate that the call was established in an CSFB context.
+ *  \returns callee-allocated msgb with BSSMAP Clear Command message. */
+struct msgb *gsm0808_create_clear_command2(uint8_t cause, bool csfb_ind)
+{
+	struct msgb *msg = gsm0808_create_clear_command(cause);
+	if (!msg)
+		return NULL;
+
+	if (csfb_ind)
+		msgb_v_put(msg, GSM0808_IE_CSFB_INDICATION);
 
 	return msg;
 }
@@ -265,17 +278,46 @@ struct msgb *gsm0808_create_cipher_complete(struct msgb *layer3, uint8_t alg_id)
 }
 
 /*! Create BSSMAP Cipher Mode Reject message
- *  \param[in] reason TS 08.08 cause value
+ *  \param[in] cause 3GPP TS 08.08 §3.2.2.5 cause value
  *  \returns callee-allocated msgb with BSSMAP Cipher Mode Reject message */
-struct msgb *gsm0808_create_cipher_reject(uint8_t cause)
+struct msgb *gsm0808_create_cipher_reject(enum gsm0808_cause cause)
 {
 	struct msgb *msg = msgb_alloc_headroom(BSSMAP_MSG_SIZE, BSSMAP_MSG_HEADROOM,
-					       "bssmap: clear complete");
+					       "bssmap: cipher mode reject");
 	if (!msg)
 		return NULL;
 
 	msgb_v_put(msg, BSS_MAP_MSG_CIPHER_MODE_REJECT);
-	msgb_tlv_put(msg, GSM0808_IE_CAUSE, 1, &cause);
+
+	gsm0808_enc_cause(msg, cause);
+
+	msg->l3h = msgb_tv_push(msg, BSSAP_MSG_BSS_MANAGEMENT, msgb_length(msg));
+
+	return msg;
+}
+
+/*! Create BSSMAP Cipher Mode Reject message
+ *  \param[in] class 3GPP TS 08.08 §3.2.2.5 cause's class
+ *  \param[in] ext 3GPP TS 08.08 §3.2.2.5 cause value (national application extension)
+ *  \returns callee-allocated msgb with BSSMAP Cipher Mode Reject message */
+struct msgb *gsm0808_create_cipher_reject_ext(enum gsm0808_cause_class class, uint8_t ext)
+{
+	uint16_t cause;
+	struct msgb *msg = msgb_alloc_headroom(BSSMAP_MSG_SIZE, BSSMAP_MSG_HEADROOM,
+					       "bssmap: cipher mode reject");
+	if (!msg)
+		return NULL;
+
+	/* Set cause code class in the upper byte */
+	cause = 0x80 | (class << 4);
+	cause = cause << 8;
+
+	/* Set cause code extension in the lower byte */
+	cause |= ext;
+
+	msgb_v_put(msg, BSS_MAP_MSG_CIPHER_MODE_REJECT);
+
+	gsm0808_enc_cause(msg, cause);
 
 	msg->l3h = msgb_tv_push(msg, BSSAP_MSG_BSS_MANAGEMENT, msgb_length(msg));
 
@@ -286,19 +328,24 @@ struct msgb *gsm0808_create_cipher_reject(uint8_t cause)
  *  \param[in] config LCLS Configuration
  *  \param[in] control LCLS Connection Status Control
  *  \returns callee-allocated msgb with BSSMAP LCLS NOTIFICATION */
-struct msgb *gsm0808_create_lcls_conn_ctrl(enum gsm0808_lcls_config *config,
-					   enum gsm0808_lcls_control *control)
+struct msgb *gsm0808_create_lcls_conn_ctrl(enum gsm0808_lcls_config config,
+					   enum gsm0808_lcls_control control)
 {
-	struct msgb *msg = msgb_alloc_headroom(BSSMAP_MSG_SIZE, BSSMAP_MSG_HEADROOM,
-					       "bssmap: LCLS CONN CTRL");
+	struct msgb *msg;
+
+	/* According to NOTE 1 in §3.2.1.91 at least one of the parameters is required */
+	if (config == GSM0808_LCLS_CFG_NA && control == GSM0808_LCLS_CSC_NA)
+		return NULL;
+
+	msg = msgb_alloc_headroom(BSSMAP_MSG_SIZE, BSSMAP_MSG_HEADROOM, "bssmap: LCLS CONN CTRL");
 	if (!msg)
 		return NULL;
 
 	msgb_v_put(msg, BSS_MAP_MSG_LCLS_CONNECT_CTRL);
-	if (config)
-		msgb_tv_put(msg, GSM0808_IE_LCLS_CONFIG, *config);
-	if (control)
-		msgb_tv_put(msg, GSM0808_IE_LCLS_CONFIG, *control);
+	if (config != GSM0808_LCLS_CFG_NA)
+		msgb_tv_put(msg, GSM0808_IE_LCLS_CONFIG, config);
+	if (control != GSM0808_LCLS_CSC_NA)
+		msgb_tv_put(msg, GSM0808_IE_LCLS_CONFIG, control);
 	msg->l3h = msgb_tv_push(msg, BSSAP_MSG_BSS_MANAGEMENT, msgb_length(msg));
 
 	return msg;
@@ -341,6 +388,19 @@ struct msgb *gsm0808_create_lcls_notification(enum gsm0808_lcls_status status, b
 	return msg;
 }
 
+/*! Create BSSMAP Classmark Request message
+ *  \returns callee-allocated msgb with BSSMAP Classmark Request message */
+struct msgb *gsm0808_create_classmark_request()
+{
+	struct msgb *msg = msgb_alloc_headroom(BSSMAP_MSG_SIZE, BSSMAP_MSG_HEADROOM,
+					       "classmark-request");
+	if (!msg)
+		return NULL;
+
+	msgb_v_put(msg, BSS_MAP_MSG_CLASSMARK_RQST);
+	msg->l3h = msgb_tv_push(msg, BSSAP_MSG_BSS_MANAGEMENT, msgb_length(msg));
+	return msg;
+}
 
 /*! Create BSSMAP Classmark Update message
  *  \param[in] cm2 Classmark 2
@@ -386,18 +446,22 @@ struct msgb *gsm0808_create_sapi_reject(uint8_t link_id)
 	return msg;
 }
 
-/*! Create BSSMAP Assignment Request message
+/*! Create BSSMAP Assignment Request message, 3GPP TS 48.008 §3.2.1.1.
+ *  This is identical to gsm0808_create_ass(), but adds KC and LCLS IEs.
  *  \param[in] ct Channel Type
  *  \param[in] cic Circuit Identity Code (Classic A only)
  *  \param[in] ss Socket Address of MSC-side RTP socket (AoIP only)
  *  \param[in] scl Speech Codec List (AoIP only)
- *  \param[in] ci Call Identifier (Optional, LCLS)
+ *  \param[in] ci Call Identifier (Optional), §3.2.2.105
+ *  \param[in] kc Kc128 ciphering key (Optional, A5/4), §3.2.2.109
+ *  \param[in] lcls Optional LCLS parameters
  *  \returns callee-allocated msgb with BSSMAP Assignment Request message */
-struct msgb *gsm0808_create_ass(const struct gsm0808_channel_type *ct,
-				const uint16_t *cic,
-				const struct sockaddr_storage *ss,
-				const struct gsm0808_speech_codec_list *scl,
-				const uint32_t *ci)
+struct msgb *gsm0808_create_ass2(const struct gsm0808_channel_type *ct,
+				 const uint16_t *cic,
+				 const struct sockaddr_storage *ss,
+				 const struct gsm0808_speech_codec_list *scl,
+				 const uint32_t *ci,
+				 const uint8_t *kc, const struct osmo_lcls *lcls)
 {
 	/* See also: 3GPP TS 48.008 3.2.1.1 ASSIGNMENT REQUEST */
 	struct msgb *msg;
@@ -442,6 +506,12 @@ struct msgb *gsm0808_create_ass(const struct gsm0808_channel_type *ct,
 				  (uint8_t *) & ci_sw);
 	}
 
+	if (kc)
+		msgb_tv_fixed_put(msg, GSM0808_IE_KC_128, 16, kc);
+
+	if (lcls)
+		gsm0808_enc_lcls(msg, lcls);
+
 	/* push the bssmap header */
 	msg->l3h =
 	    msgb_tv_push(msg, BSSAP_MSG_BSS_MANAGEMENT, msgb_length(msg));
@@ -449,7 +519,23 @@ struct msgb *gsm0808_create_ass(const struct gsm0808_channel_type *ct,
 	return msg;
 }
 
-/*! Create BSSMAP Assignment Completed message
+/*! Create BSSMAP Assignment Request message, 3GPP TS 48.008 §3.2.1.1.
+ *  \param[in] ct Channel Type
+ *  \param[in] cic Circuit Identity Code (Classic A only)
+ *  \param[in] ss Socket Address of MSC-side RTP socket (AoIP only)
+ *  \param[in] scl Speech Codec List (AoIP only)
+ *  \param[in] ci Call Identifier (Optional), §3.2.2.105
+ *  \returns callee-allocated msgb with BSSMAP Assignment Request message */
+struct msgb *gsm0808_create_ass(const struct gsm0808_channel_type *ct,
+				const uint16_t *cic,
+				const struct sockaddr_storage *ss,
+				const struct gsm0808_speech_codec_list *scl,
+				const uint32_t *ci)
+{
+	return gsm0808_create_ass2(ct, cic, ss, scl, ci, NULL, NULL);
+}
+
+/*! Create BSSMAP Assignment Completed message as per 3GPP TS 48.008 §3.2.1.2
  *  \param[in] rr_cause GSM 04.08 RR Cause value
  *  \param[in] chosen_channel Chosen Channel
  *  \param[in] encr_alg_id Encryption Algorithm ID
@@ -457,13 +543,14 @@ struct msgb *gsm0808_create_ass(const struct gsm0808_channel_type *ct,
  *  \param[in] ss Socket Address of BSS-side RTP socket
  *  \param[in] sc Speech Codec (current)
  *  \param[in] scl Speech Codec List (permitted)
+ *  \param[in] lcls_bss_status §3.2.2.119 LCLS-BSS-Status, optional
  *  \returns callee-allocated msgb with BSSMAP Assignment Complete message */
-struct msgb *gsm0808_create_ass_compl(uint8_t rr_cause, uint8_t chosen_channel,
+struct msgb *gsm0808_create_ass_compl2(uint8_t rr_cause, uint8_t chosen_channel,
 				      uint8_t encr_alg_id, uint8_t speech_mode,
 				      const struct sockaddr_storage *ss,
 				      const struct gsm0808_speech_codec *sc,
-				      const struct gsm0808_speech_codec_list
-				      *scl)
+				       const struct gsm0808_speech_codec_list *scl,
+				       enum gsm0808_lcls_status lcls_bss_status)
 {
 	struct msgb *msg = msgb_alloc_headroom(BSSMAP_MSG_SIZE, BSSMAP_MSG_HEADROOM,
 						"bssmap: ass compl");
@@ -500,11 +587,34 @@ struct msgb *gsm0808_create_ass_compl(uint8_t rr_cause, uint8_t chosen_channel,
 	if (scl)
 		gsm0808_enc_speech_codec_list(msg, scl);
 
-	/* write LSA identifier 3.2.2.15 */
+	/* FIXME: write LSA identifier 3.2.2.15 - see 3GPP TS 43.073 */
+
+	/* LCLS-BSS-Status 3.2.2.119 */
+	if (lcls_bss_status != GSM0808_LCLS_STS_NA)
+		msgb_tv_put(msg, GSM0808_IE_LCLS_BSS_STATUS, lcls_bss_status);
 
 	msg->l3h = msgb_tv_push(msg, BSSAP_MSG_BSS_MANAGEMENT, msgb_length(msg));
 
 	return msg;
+}
+
+/*! Create BSSMAP Assignment Completed message
+ *  \param[in] rr_cause GSM 04.08 RR Cause value
+ *  \param[in] chosen_channel Chosen Channel
+ *  \param[in] encr_alg_id Encryption Algorithm ID
+ *  \param[in] speech_mode Speech Mode
+ *  \param[in] ss Socket Address of BSS-side RTP socket
+ *  \param[in] sc Speech Codec (current)
+ *  \param[in] scl Speech Codec List (permitted)
+ *  \returns callee-allocated msgb with BSSMAP Assignment Complete message */
+struct msgb *gsm0808_create_ass_compl(uint8_t rr_cause, uint8_t chosen_channel,
+				      uint8_t encr_alg_id, uint8_t speech_mode,
+				      const struct sockaddr_storage *ss,
+				      const struct gsm0808_speech_codec *sc,
+				      const struct gsm0808_speech_codec_list *scl)
+{
+	return gsm0808_create_ass_compl2(rr_cause, chosen_channel, encr_alg_id, speech_mode,
+					 ss, sc, scl, GSM0808_LCLS_STS_NA);
 }
 
 /*! Create BSSMAP Assignment Completed message
@@ -518,8 +628,8 @@ struct msgb *gsm0808_create_assignment_completed(uint8_t rr_cause,
 						 uint8_t encr_alg_id,
 						 uint8_t speech_mode)
 {
-	return gsm0808_create_ass_compl(rr_cause, chosen_channel, encr_alg_id,
-					speech_mode, NULL, NULL, NULL);
+	return gsm0808_create_ass_compl2(rr_cause, chosen_channel, encr_alg_id,
+					 speech_mode, NULL, NULL, NULL, GSM0808_LCLS_STS_NA);
 }
 
 /*! Create BSSMAP Assignment Failure message
@@ -537,7 +647,7 @@ struct msgb *gsm0808_create_ass_fail(uint8_t cause, const uint8_t *rr_cause,
 		return NULL;
 
 	msgb_v_put(msg, BSS_MAP_MSG_ASSIGMENT_FAILURE);
-	msgb_tlv_put(msg, GSM0808_IE_CAUSE, 1, &cause);
+	gsm0808_enc_cause(msg, cause);
 
 	/* RR cause 3.2.2.22 */
 	if (rr_cause)
@@ -579,7 +689,7 @@ struct msgb *gsm0808_create_clear_rqst(uint8_t cause)
 		return NULL;
 
 	msgb_v_put(msg, BSS_MAP_MSG_CLEAR_RQST);
-	msgb_tlv_put(msg, GSM0808_IE_CAUSE, 1, &cause);
+	gsm0808_enc_cause(msg, cause);
 	msg->l3h = msgb_tv_push(msg, BSSAP_MSG_BSS_MANAGEMENT, msgb_length(msg));
 
 	return msg;
@@ -588,7 +698,7 @@ struct msgb *gsm0808_create_clear_rqst(uint8_t cause)
 /*! Create BSSMAP PAGING message
  *  \param[in] imsi Mandatory paged IMSI in string representation
  *  \param[in] tmsi Optional paged TMSI
- *  \param[in] cil Cell Identity List (where to page)
+ *  \param[in] cil Mandatory Cell Identity List (where to page)
  *  \param[in] chan_needed Channel Type needed
  *  \returns callee-allocated msgb with BSSMAP PAGING message */
 struct msgb *gsm0808_create_paging2(const char *imsi, const uint32_t *tmsi,
@@ -615,7 +725,7 @@ struct msgb *gsm0808_create_paging2(const char *imsi, const uint32_t *tmsi,
 	/* Message Type 3.2.2.1 */
 	msgb_v_put(msg, BSS_MAP_MSG_PAGING);
 
-	/* IMSI 3.2.2.6 */
+	/* mandatory IMSI 3.2.2.6 */
 	mid_len = gsm48_generate_mid_from_imsi(mid_buf, imsi);
 	msgb_tlv_put(msg, GSM0808_IE_IMSI, mid_len - 2, mid_buf + 2);
 
@@ -626,9 +736,8 @@ struct msgb *gsm0808_create_paging2(const char *imsi, const uint32_t *tmsi,
 			     (uint8_t *) & tmsi_sw);
 	}
 
-	/* Cell Identifier List 3.2.2.27 */
-	if (cil)
-		gsm0808_enc_cell_id_list2(msg, cil);
+	/* mandatory Cell Identifier List 3.2.2.27 */
+	gsm0808_enc_cell_id_list2(msg, cil);
 
 	/* Channel Needed 3.2.2.36 */
 	if (chan_needed) {
@@ -717,7 +826,7 @@ struct msgb *gsm0808_create_handover_required(const struct gsm0808_handover_requ
 	msgb_v_put(msg, BSS_MAP_MSG_HANDOVER_REQUIRED);
 
 	/* Cause, 3.2.2.5 */
-	msgb_tlv_put(msg, GSM0808_IE_CAUSE, params->cause & 0x80? 2 : 1, (const uint8_t*)&params->cause);
+	gsm0808_enc_cause(msg, params->cause);
 
 	/* Cell Identifier List, 3.2.2.27 */
 	gsm0808_enc_cell_id_list2(msg, &params->cil);
@@ -763,6 +872,9 @@ struct msgb *gsm0808_create_handover_request_ack(const uint8_t *l3_info, uint8_t
 	if (chosen_speech_version != 0)
 		msgb_tv_put(msg, GSM0808_IE_SPEECH_VERSION, chosen_speech_version);
 
+	/* prepend header with final length */
+	msg->l3h = msgb_tv_push(msg, BSSAP_MSG_BSS_MANAGEMENT, msgb_length(msg));
+
 	return msg;
 }
 
@@ -779,6 +891,9 @@ struct msgb *gsm0808_create_handover_detect()
 
 	/* Message Type, 3.2.2.1 */
 	msgb_v_put(msg, BSS_MAP_MSG_HANDOVER_DETECT);
+
+	/* prepend header with final length */
+	msg->l3h = msgb_tv_push(msg, BSSAP_MSG_BSS_MANAGEMENT, msgb_length(msg));
 
 	return msg;
 }
@@ -816,6 +931,9 @@ struct msgb *gsm0808_create_handover_complete(const struct gsm0808_handover_comp
 	if (params->lcls_bss_status_present)
 		msgb_tv_put(msg, GSM0808_IE_LCLS_BSS_STATUS, params->lcls_bss_status);
 
+	/* prepend header with final length */
+	msg->l3h = msgb_tv_push(msg, BSSAP_MSG_BSS_MANAGEMENT, msgb_length(msg));
+
 	return msg;
 }
 
@@ -833,7 +951,7 @@ struct msgb *gsm0808_create_handover_failure(const struct gsm0808_handover_failu
 	msgb_v_put(msg, BSS_MAP_MSG_HANDOVER_FAILURE);
 
 	/* Cause, 3.2.2.5 */
-	msgb_tlv_put(msg, GSM0808_IE_CAUSE, params->cause & 0x80? 2 : 1, (const uint8_t*)&params->cause);
+	gsm0808_enc_cause(msg, params->cause);
 
 	/* RR Cause, 3.2.2.22 */
 	if (params->rr_cause_present)
@@ -842,6 +960,55 @@ struct msgb *gsm0808_create_handover_failure(const struct gsm0808_handover_failu
 	/* AoIP: add Codec List (BSS Supported) 3.2.2.103 */
 	if (params->codec_list_bss_supported.len)
 		gsm0808_enc_speech_codec_list(msg, &params->codec_list_bss_supported);
+
+	/* prepend header with final length */
+	msg->l3h = msgb_tv_push(msg, BSSAP_MSG_BSS_MANAGEMENT, msgb_length(msg));
+
+	return msg;
+}
+
+/*! Create BSSMAP HANDOVER PERFORMED message, 3GPP TS 48.008 3.2.1.25.
+ * \param[in] params  All information to be encoded.
+ * \returns callee-allocated msgb with BSSMAP HANDOVER PERFORMED message */
+struct msgb *gsm0808_create_handover_performed(const struct gsm0808_handover_performed *params)
+{
+	struct msgb *msg;
+
+	msg = msgb_alloc_headroom(BSSMAP_MSG_SIZE, BSSMAP_MSG_HEADROOM, "BSSMAP-HANDOVER-PERFORMED");
+	if (!msg)
+		return NULL;
+
+	/* Message Type, 3.2.2.1 */
+	msgb_v_put(msg, BSS_MAP_MSG_HANDOVER_PERFORMED);
+
+	/* Cause, 3.2.2.5 */
+	gsm0808_enc_cause(msg, params->cause);
+
+	/* Cell Identifier, 3.2.2.17 */
+	gsm0808_enc_cell_id(msg, &params->cell_id);
+
+	/* Chosen Channel 3.2.2.33 */
+	if (params->chosen_channel_present)
+		msgb_tv_put(msg, GSM0808_IE_CHOSEN_CHANNEL, params->chosen_channel);
+
+	/* Chosen Encryption Algorithm 3.2.2.44 */
+	if (params->chosen_encr_alg_present)
+		msgb_tv_put(msg, GSM0808_IE_CHOSEN_ENCR_ALG, params->chosen_encr_alg);
+
+	/* Speech Version (chosen) 3.2.2.51 */
+	if (params->speech_version_chosen_present)
+		msgb_tv_put(msg, GSM0808_IE_SPEECH_VERSION, params->speech_version_chosen);
+
+	/* AoIP: Speech Codec (chosen) 3.2.2.104 */
+	if (params->speech_codec_chosen_present)
+		gsm0808_enc_speech_codec(msg, &params->speech_codec_chosen);
+
+	/* LCLS-BSS-Status 3.2.2.119 */
+	if (params->lcls_bss_status_present)
+		msgb_tv_put(msg, GSM0808_IE_LCLS_BSS_STATUS, params->lcls_bss_status);
+
+	/* prepend header with final length */
+	msg->l3h = msgb_tv_push(msg, BSSAP_MSG_BSS_MANAGEMENT, msgb_length(msg));
 
 	return msg;
 }
@@ -1153,6 +1320,32 @@ const struct value_string gsm0808_speech_codec_type_names[] = {
 	{ 0, NULL }
 };
 
+const struct value_string gsm0808_permitted_speech_names[] = {
+	{ GSM0808_PERM_FR1, "FR1" },
+	{ GSM0808_PERM_FR2, "FR2" },
+	{ GSM0808_PERM_FR3, "FR3" },
+	{ GSM0808_PERM_FR4, "FR4" },
+	{ GSM0808_PERM_FR5, "FR5" },
+	{ GSM0808_PERM_HR1, "HR1" },
+	{ GSM0808_PERM_HR2, "HR2" },
+	{ GSM0808_PERM_HR3, "HR3" },
+	{ GSM0808_PERM_HR4, "HR4" },
+	{ GSM0808_PERM_HR6, "HR6" },
+	{ 0, NULL }
+};
+
+const struct value_string gsm0808_chosen_enc_alg_names[] = {
+	{ GSM0808_ALG_ID_A5_0, "A5/0" },
+	{ GSM0808_ALG_ID_A5_1, "A5/1" },
+	{ GSM0808_ALG_ID_A5_2, "A5/2" },
+	{ GSM0808_ALG_ID_A5_3, "A5/3" },
+	{ GSM0808_ALG_ID_A5_4, "A5/4" },
+	{ GSM0808_ALG_ID_A5_5, "A5/5" },
+	{ GSM0808_ALG_ID_A5_6, "A5/6" },
+	{ GSM0808_ALG_ID_A5_7, "A5/7" },
+	{ 0, NULL }
+};
+
 static const struct value_string gsm0808_cause_names[] = {
 	{ GSM0808_CAUSE_RADIO_INTERFACE_MESSAGE_FAILURE, "RADIO INTERFACE MESSAGE FAILURE" },
 	{ GSM0808_CAUSE_RADIO_INTERFACE_FAILURE, "RADIO INTERFACE FAILURE" },
@@ -1220,8 +1413,26 @@ static const struct value_string gsm0808_cause_names[] = {
 	{ 0, NULL }
 };
 
+static const struct value_string gsm0808_cause_class_names[] = {
+	{ GSM0808_CAUSE_CLASS_NORM0,		"Normal event" },
+	{ GSM0808_CAUSE_CLASS_NORM1,		"Normal event" },
+	{ GSM0808_CAUSE_CLASS_RES_UNAVAIL,	"Resource unavailable" },
+	{ GSM0808_CAUSE_CLASS_SRV_OPT_NA,	"Service or option not available" },
+	{ GSM0808_CAUSE_CLASS_SRV_OPT_NIMPL,	"Service or option not implemented" },
+	{ GSM0808_CAUSE_CLASS_INVAL,		"Invalid message" },
+	{ GSM0808_CAUSE_CLASS_PERR,		"Protocol error" },
+	{ GSM0808_CAUSE_CLASS_INTW,		"Interworking" },
+	{ 0, NULL }
+};
+
+/*! Return string name of BSSMAP Cause Class name */
+const char *gsm0808_cause_class_name(enum gsm0808_cause_class class)
+{
+	return get_value_string(gsm0808_cause_class_names, class);
+}
+
 /*! Return string name of BSSMAP Cause name */
-const char *gsm0808_cause_name(uint8_t cause)
+const char *gsm0808_cause_name(enum gsm0808_cause cause)
 {
 	return get_value_string(gsm0808_cause_names, cause);
 }
@@ -1238,6 +1449,7 @@ const struct value_string gsm0808_lcls_config_names[] = {
 	  "Connect both-way, bi-cast UL to CN, send access DL from CN" },
 	{ GSM0808_LCLS_CFG_BOTH_WAY_AND_BICAST_UL_SEND_DL_BLOCK_LOCAL_DL,
 	  "Connect both-way, bi-cast UL to CN, send access DL from CN, block local DL" },
+	{ GSM0808_LCLS_CFG_NA, "Not available" },
 	{ 0, NULL }
 };
 
@@ -1247,6 +1459,7 @@ const struct value_string gsm0808_lcls_control_names[] = {
 	{ GSM0808_LCLS_CSC_RELEASE_LCLS,			"Release LCLS" },
 	{ GSM0808_LCLS_CSC_BICAST_UL_AT_HANDOVER,		"Bi-cast UL at Handover" },
 	{ GSM0808_LCLS_CSC_BICAST_UL_AND_RECV_DL_AT_HANDOVER,	"Bi-cast UL and receive DL at Handover" },
+	{ GSM0808_LCLS_CSC_NA,					"Not available" },
 	{ 0, NULL }
 };
 
@@ -1256,6 +1469,7 @@ const struct value_string gsm0808_lcls_status_names[] = {
 	{ GSM0808_LCLS_STS_NO_LONGER_LS,	"Call is no longer locally switched" },
 	{ GSM0808_LCLS_STS_REQ_LCLS_NOT_SUPP,	"Requested LCLS configuration is not supported" },
 	{ GSM0808_LCLS_STS_LOCALLY_SWITCHED,	"Call is locally switched with requested LCLS config" },
+	{ GSM0808_LCLS_STS_NA,			"Not available" },
 	{ 0, NULL }
 };
 

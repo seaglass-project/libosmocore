@@ -132,6 +132,12 @@ cat $abs_srcdir/gsm0808/gsm0808_test.ok > expout
 AT_CHECK([$abs_top_builddir/tests/gsm0808/gsm0808_test], [0], [expout], [ignore])
 AT_CLEANUP
 
+AT_SETUP([gsm29205])
+AT_KEYWORDS([gsm29205])
+cat $abs_srcdir/gsm29205/gsm29205_test.ok > expout
+AT_CHECK([$abs_top_builddir/tests/gsm29205/gsm29205_test], [0], [expout], [ignore])
+AT_CLEANUP
+
 AT_SETUP([gsm0408])
 AT_KEYWORDS([gsm0408])
 cat $abs_srcdir/gsm0408/gsm0408_test.ok > expout
@@ -205,7 +211,8 @@ AT_CLEANUP
 AT_SETUP([utils])
 AT_KEYWORDS([utils])
 cat $abs_srcdir/utils/utils_test.ok > expout
-AT_CHECK([$abs_top_builddir/tests/utils/utils_test], [0], [expout], [ignore])
+cat $abs_srcdir/utils/utils_test.err > experr
+AT_CHECK([$abs_top_builddir/tests/utils/utils_test], [0], [expout], [experr])
 AT_CLEANUP
 
 AT_SETUP([stats])
@@ -273,6 +280,13 @@ touch experr
 AT_CHECK([$abs_top_builddir/tests/oap/oap_test], [0], [expout], [experr])
 AT_CLEANUP
 
+AT_SETUP([oap_client])
+AT_KEYWORDS([oap_client])
+cat $abs_srcdir/oap/oap_client_test.ok > expout
+cat $abs_srcdir/oap/oap_client_test.err > experr
+AT_CHECK([$abs_top_builddir/tests/oap/oap_client_test], [0], [expout], [experr])
+AT_CLEANUP
+
 AT_SETUP([socket])
 AT_KEYWORDS([socket])
 cat $abs_srcdir/socket/socket_test.ok > expout
@@ -310,4 +324,10 @@ AT_SETUP([gsm23003])
 AT_KEYWORDS([gsm23003])
 cat $abs_srcdir/gsm23003/gsm23003_test.ok > expout
 AT_CHECK([$abs_top_builddir/tests/gsm23003/gsm23003_test], [0], [expout], [ignore])
+AT_CLEANUP
+
+AT_SETUP([tdef])
+AT_KEYWORDS([tdef])
+cat $abs_srcdir/tdef/tdef_test.ok > expout
+AT_CHECK([$abs_top_builddir/tests/tdef/tdef_test], [0], [expout], [ignore])
 AT_CLEANUP

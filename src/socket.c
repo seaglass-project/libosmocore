@@ -35,6 +35,7 @@
 #include <osmocom/core/select.h>
 #include <osmocom/core/socket.h>
 #include <osmocom/core/talloc.h>
+#include <osmocom/core/utils.h>
 
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -56,7 +57,7 @@ static struct addrinfo *addrinfo_helper(uint16_t family, uint16_t type, uint8_t 
 					const char *host, uint16_t port, bool passive)
 {
 	struct addrinfo hints, *result;
-	char portbuf[16];
+	char portbuf[6];
 	int rc;
 
 	snprintf(portbuf, sizeof(portbuf), "%u", port);
@@ -208,16 +209,20 @@ int osmo_sock_init2(uint16_t family, uint16_t type, uint8_t proto,
 			if (sfd < 0)
 				continue;
 
-			rc = setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR,
-							&on, sizeof(on));
-			if (rc < 0) {
-				LOGP(DLGLOBAL, LOGL_ERROR,
-					"cannot setsockopt socket:"
-					" %s:%u: %s\n",
-					local_host, local_port, strerror(errno));
-				close(sfd);
-				continue;
+			if (proto != IPPROTO_UDP || flags & OSMO_SOCK_F_UDP_REUSEADDR) {
+				rc = setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR,
+						&on, sizeof(on));
+				if (rc < 0) {
+					LOGP(DLGLOBAL, LOGL_ERROR,
+					     "cannot setsockopt socket:"
+					     " %s:%u: %s\n",
+					     local_host, local_port,
+					     strerror(errno));
+					close(sfd);
+					continue;
+				}
 			}
+
 			if (bind(sfd, rp->ai_addr, rp->ai_addrlen) == -1) {
 				LOGP(DLGLOBAL, LOGL_ERROR, "unable to bind socket: %s:%u: %s\n",
 					local_host, local_port, strerror(errno));
@@ -344,15 +349,17 @@ int osmo_sock_init(uint16_t family, uint16_t type, uint8_t proto,
 				continue;
 			}
 		} else {
-			rc = setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR,
-							&on, sizeof(on));
-			if (rc < 0) {
-				LOGP(DLGLOBAL, LOGL_ERROR,
-					"cannot setsockopt socket:"
-					" %s:%u: %s\n",
-					host, port, strerror(errno));
-				close(sfd);
-				continue;
+			if (proto != IPPROTO_UDP || flags & OSMO_SOCK_F_UDP_REUSEADDR) {
+				rc = setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR,
+						&on, sizeof(on));
+				if (rc < 0) {
+					LOGP(DLGLOBAL, LOGL_ERROR,
+					     "cannot setsockopt socket:"
+					     " %s:%u: %s\n",
+					     host, port, strerror(errno));
+					close(sfd);
+					continue;
+				}
 			}
 			if (bind(sfd, rp->ai_addr, rp->ai_addrlen) == -1) {
 				LOGP(DLGLOBAL, LOGL_ERROR, "unable to bind socket:"
@@ -372,7 +379,16 @@ int osmo_sock_init(uint16_t family, uint16_t type, uint8_t proto,
 		return -ENODEV;
 	}
 
-	setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+	if (proto != IPPROTO_UDP || flags & OSMO_SOCK_F_UDP_REUSEADDR) {
+		rc = setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+		if (rc < 0) {
+			LOGP(DLGLOBAL, LOGL_ERROR,
+			     "cannot setsockopt socket: %s:%u: %s\n", host,
+			     port, strerror(errno));
+			close(sfd);
+			sfd = -1;
+		}
+	}
 
 	rc = osmo_sock_init_tail(sfd, type, flags);
 	if (rc < 0) {
@@ -553,6 +569,40 @@ int osmo_sockaddr_is_local(struct sockaddr *addr, unsigned int addrlen)
 	return 0;
 }
 
+/*! Convert sockaddr_in to IP address as char string and port as uint16_t.
+ *  \param[out] addr  String buffer to write IP address to, or NULL.
+ *  \param[out] addr_len  Size of \a addr.
+ *  \param[out] port  Pointer to uint16_t to write the port number to, or NULL.
+ *  \param[in] sin  Sockaddr to convert.
+ *  \returns the required string buffer size, like osmo_strlcpy(), or 0 if \a addr is NULL.
+ */
+size_t osmo_sockaddr_in_to_str_and_uint(char *addr, unsigned int addr_len, uint16_t *port,
+					const struct sockaddr_in *sin)
+{
+	if (port)
+		*port = ntohs(sin->sin_port);
+
+	if (addr)
+		return osmo_strlcpy(addr, inet_ntoa(sin->sin_addr), addr_len);
+
+	return 0;
+}
+
+/*! Convert sockaddr to IP address as char string and port as uint16_t.
+ *  \param[out] addr  String buffer to write IP address to, or NULL.
+ *  \param[out] addr_len  Size of \a addr.
+ *  \param[out] port  Pointer to uint16_t to write the port number to, or NULL.
+ *  \param[in] sa  Sockaddr to convert.
+ *  \returns the required string buffer size, like osmo_strlcpy(), or 0 if \a addr is NULL.
+ */
+unsigned int osmo_sockaddr_to_str_and_uint(char *addr, unsigned int addr_len, uint16_t *port,
+					   const struct sockaddr *sa)
+{
+	const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
+
+	return osmo_sockaddr_in_to_str_and_uint(addr, addr_len, port, sin);
+}
+
 /*! Initialize a unix domain socket (including bind/connect)
  *  \param[in] type Socket type like SOCK_DGRAM, SOCK_STREAM
  *  \param[in] proto Protocol like IPPROTO_TCP, IPPROTO_UDP
@@ -576,8 +626,12 @@ int osmo_sock_unix_init(uint16_t type, uint8_t proto,
 		return -EINVAL;
 
 	local.sun_family = AF_UNIX;
-	strncpy(local.sun_path, socket_path, sizeof(local.sun_path));
-	local.sun_path[sizeof(local.sun_path) - 1] = '\0';
+	/* When an AF_UNIX socket is bound, sun_path should be NUL-terminated. See unix(7) man page. */
+	if (osmo_strlcpy(local.sun_path, socket_path, sizeof(local.sun_path)) >= sizeof(local.sun_path)) {
+		LOGP(DLGLOBAL, LOGL_ERROR, "Socket path exceeds maximum length of %zd bytes: %s\n",
+		     sizeof(local.sun_path), socket_path);
+		return -ENOSPC;
+	}
 
 #if defined(BSD44SOCKETS) || defined(__UNIXWARE__)
 	local.sun_len = strlen(local.sun_path);
@@ -643,45 +697,134 @@ int osmo_sock_unix_init_ofd(struct osmo_fd *ofd, uint16_t type, uint8_t proto,
 	return osmo_fd_init_ofd(ofd, osmo_sock_unix_init(type, proto, socket_path, flags));
 }
 
-/*! Get address/port information on soocket in dyn-alloc string
+/*! Get the IP and/or port number on socket in separate string buffers.
+ *  \param[in] fd file descriptor of socket
+ *  \param[out] ip IP address (will be filled in when not NULL)
+ *  \param[in] ip_len length of the ip buffer
+ *  \param[out] port number (will be filled in when not NULL)
+ *  \param[in] port_len length of the port buffer
+ *  \param[in] local (true) or remote (false) name will get looked at
+ *  \returns 0 on success; negative otherwise
+ */
+int osmo_sock_get_ip_and_port(int fd, char *ip, size_t ip_len, char *port, size_t port_len, bool local)
+{
+	struct sockaddr sa;
+	socklen_t len = sizeof(sa);
+	char ipbuf[INET6_ADDRSTRLEN], portbuf[6];
+	int rc;
+
+	rc = local ? getsockname(fd, &sa, &len) : getpeername(fd, &sa, &len);
+	if (rc < 0)
+		return rc;
+
+	rc = getnameinfo(&sa, len, ipbuf, sizeof(ipbuf),
+			 portbuf, sizeof(portbuf),
+			 NI_NUMERICHOST | NI_NUMERICSERV);
+	if (rc < 0)
+		return rc;
+
+	if (ip)
+		strncpy(ip, ipbuf, ip_len);
+	if (port)
+		strncpy(port, portbuf, port_len);
+	return 0;
+}
+
+/*! Get local IP address on socket
+ *  \param[in] fd file descriptor of socket
+ *  \param[out] ip IP address (will be filled in)
+ *  \param[in] len length of the output buffer
+ *  \returns 0 on success; negative otherwise
+ */
+int osmo_sock_get_local_ip(int fd, char *ip, size_t len)
+{
+	return osmo_sock_get_ip_and_port(fd, ip, len, NULL, 0, true);
+}
+
+/*! Get local port on socket
+ *  \param[in] fd file descriptor of socket
+ *  \param[out] port number (will be filled in)
+ *  \param[in] len length of the output buffer
+ *  \returns 0 on success; negative otherwise
+ */
+int osmo_sock_get_local_ip_port(int fd, char *port, size_t len)
+{
+	return osmo_sock_get_ip_and_port(fd, NULL, 0, port, len, true);
+}
+
+/*! Get remote IP address on socket
+ *  \param[in] fd file descriptor of socket
+ *  \param[out] ip IP address (will be filled in)
+ *  \param[in] len length of the output buffer
+ *  \returns 0 on success; negative otherwise
+ */
+int osmo_sock_get_remote_ip(int fd, char *ip, size_t len)
+{
+	return osmo_sock_get_ip_and_port(fd, ip, len, NULL, 0, false);
+}
+
+/*! Get remote port on socket
+ *  \param[in] fd file descriptor of socket
+ *  \param[out] port number (will be filled in)
+ *  \param[in] len length of the output buffer
+ *  \returns 0 on success; negative otherwise
+ */
+int osmo_sock_get_remote_ip_port(int fd, char *port, size_t len)
+{
+	return osmo_sock_get_ip_and_port(fd, NULL, 0, port, len, false);
+}
+
+/*! Get address/port information on socket in dyn-alloc string like "(r=1.2.3.4:5<->l=6.7.8.9:10)".
+ * Usually, it is better to use osmo_sock_get_name2() for a static string buffer or osmo_sock_get_name_buf() for a
+ * caller provided string buffer, to avoid the dynamic talloc allocation.
  *  \param[in] ctx talloc context from which to allocate string buffer
  *  \param[in] fd file descriptor of socket
- *  \returns string identifying the connection of this socket
+ *  \returns string identifying the connection of this socket, talloc'd from ctx.
  */
 char *osmo_sock_get_name(void *ctx, int fd)
 {
-	struct sockaddr sa_l, sa_r;
-	socklen_t sa_len_l = sizeof(sa_l);
-	socklen_t sa_len_r = sizeof(sa_r);
-	char hostbuf_l[64], hostbuf_r[64];
-	char portbuf_l[16], portbuf_r[16];
+	char str[OSMO_SOCK_NAME_MAXLEN];
+	int rc;
+	rc = osmo_sock_get_name_buf(str, sizeof(str), fd);
+	if (rc <= 0)
+		return NULL;
+	return talloc_asprintf(ctx, "(%s)", str);
+}
+
+/*! Get address/port information on socket in provided string buffer, like "r=1.2.3.4:5<->l=6.7.8.9:10".
+ * This does not include braces like osmo_sock_get_name().
+ *  \param[out] str  Destination string buffer.
+ *  \param[in] str_len  sizeof(str).
+ *  \param[in] fd  File descriptor of socket.
+ *  \return String length as returned by snprintf(), or negative on error.
+ */
+int osmo_sock_get_name_buf(char *str, size_t str_len, int fd)
+{
+	char hostbuf_l[INET6_ADDRSTRLEN], hostbuf_r[INET6_ADDRSTRLEN];
+	char portbuf_l[6], portbuf_r[6];
 	int rc;
 
-	rc = getsockname(fd, &sa_l, &sa_len_l);
-	if (rc < 0)
-		return NULL;
+	/* get local */
+	if ((rc = osmo_sock_get_ip_and_port(fd, hostbuf_l, sizeof(hostbuf_l), portbuf_l, sizeof(portbuf_l), true)))
+		return rc;
 
-	rc = getnameinfo(&sa_l, sa_len_l, hostbuf_l, sizeof(hostbuf_l),
-			 portbuf_l, sizeof(portbuf_l),
-			 NI_NUMERICHOST | NI_NUMERICSERV);
-	if (rc < 0)
-		return NULL;
+	/* get remote */
+	if (osmo_sock_get_ip_and_port(fd, hostbuf_r, sizeof(hostbuf_r), portbuf_r, sizeof(portbuf_r), false) != 0)
+		return snprintf(str, str_len, "r=NULL<->l=%s:%s", hostbuf_l, portbuf_l);
 
-	rc = getpeername(fd, &sa_r, &sa_len_r);
-	if (rc < 0)
-		goto local_only;
+	return snprintf(str, str_len, "r=%s:%s<->l=%s:%s", hostbuf_r, portbuf_r, hostbuf_l, portbuf_l);
+}
 
-	rc = getnameinfo(&sa_r, sa_len_r, hostbuf_r, sizeof(hostbuf_r),
-			 portbuf_r, sizeof(portbuf_r),
-			 NI_NUMERICHOST | NI_NUMERICSERV);
-	if (rc < 0)
-		goto local_only;
-
-	return talloc_asprintf(ctx, "(r=%s:%s<->l=%s:%s)", hostbuf_r, portbuf_r,
-				hostbuf_l, portbuf_l);
-
-local_only:
-	return talloc_asprintf(ctx, "(r=NULL<->l=%s:%s)", hostbuf_l, portbuf_l);
+/*! Get address/port information on socket in static string, like "r=1.2.3.4:5<->l=6.7.8.9:10".
+ * This does not include braces like osmo_sock_get_name().
+ *  \param[in] fd  File descriptor of socket.
+ *  \return Static string buffer containing the result.
+ */
+const char *osmo_sock_get_name2(int fd)
+{
+	static char str[OSMO_SOCK_NAME_MAXLEN];
+	osmo_sock_get_name_buf(str, sizeof(str), fd);
+	return str;
 }
 
 static int sock_get_domain(int fd)

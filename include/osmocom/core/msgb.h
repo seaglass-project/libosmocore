@@ -81,6 +81,40 @@ static inline void msgb_queue_free(struct llist_head *queue)
 	while ((msg = msgb_dequeue(queue))) msgb_free(msg);
 }
 
+/*! Enqueue message buffer to tail of a queue and increment queue size counter
+ * \param[in] queue linked list header of queue
+ * \param[in] msg message buffer to be added to the queue
+ * \param[in] count pointer to variable holding size of the queue
+ *
+ * The function will append the specified message buffer \a msg to the queue
+ * implemented by \ref llist_head \a queue using function \ref msgb_enqueue_count,
+ * then increment \a count
+ */
+static inline void msgb_enqueue_count(struct llist_head *queue, struct msgb *msg,
+					unsigned int *count)
+{
+	msgb_enqueue(queue, msg);
+	(*count)++;
+}
+
+/*! Dequeue message buffer from head of queue and decrement queue size counter
+ * \param[in] queue linked list header of queue
+ * \param[in] count pointer to variable holding size of the queue
+ * \returns message buffer (if any) or NULL if queue empty
+ *
+ * The function will remove the first message buffer from the queue
+ * implemented by \ref llist_head \a queue using function \ref msgb_enqueue_count,
+ * and decrement \a count, all if queue is not empty.
+ */
+static inline struct msgb *msgb_dequeue_count(struct llist_head *queue,
+						unsigned int *count)
+{
+	struct msgb *msg = msgb_dequeue(queue);
+	if (msg)
+		(*count)--;
+	return msg;
+}
+
 #ifdef MSGB_DEBUG
 #include <osmocom/core/panic.h>
 #define MSGB_ABORT(msg, fmt, args ...) do {		\
@@ -96,8 +130,10 @@ static inline void msgb_queue_free(struct llist_head *queue)
 #define msgb_l2(m)	((void *)(m->l2h))
 /*! obtain L3 header of msgb */
 #define msgb_l3(m)	((void *)(m->l3h))
+/*! obtain L4 header of msgb */
+#define msgb_l4(m)	((void *)(m->l4h))
 /*! obtain SMS header of msgb */
-#define msgb_sms(m)	((void *)(m->l4h))
+#define msgb_sms(m)	msgb_l4(m)
 
 /*! determine length of L1 message
  *  \param[in] msgb message buffer
@@ -133,6 +169,18 @@ static inline unsigned int msgb_l2len(const struct msgb *msgb)
 static inline unsigned int msgb_l3len(const struct msgb *msgb)
 {
 	return msgb->tail - (uint8_t *)msgb_l3(msgb);
+}
+
+/*! determine length of L4 message
+ *  \param[in] msgb message buffer
+ *  \returns size of L4 message in bytes
+ *
+ * This function computes the number of bytes between the tail of the
+ * message and the layer 4 header.
+ */
+static inline unsigned int msgb_l4len(const struct msgb *msgb)
+{
+	return msgb->tail - (uint8_t *)msgb_sms(msgb);
 }
 
 /*! determine the length of the header
@@ -320,6 +368,15 @@ static inline void msgb_push_u32(struct msgb *msg, uint32_t word)
 	osmo_store32be(word, space);
 }
 
+static inline unsigned char *msgb_push_tl(struct msgb *msgb, uint8_t tag)
+{
+	uint8_t *data = msgb_push(msgb, 2);
+
+	data[0] = tag;
+	data[1] = msgb->len - 2;
+	return data;
+}
+
 /*! remove (pull) a header from the front of the message buffer
  *  \param[in] msgb message buffer
  *  \param[in] len number of octets to be pulled
@@ -503,6 +560,145 @@ static inline int msgb_test_invariant(const struct msgb *msg)
 	return lbound <= msg->head +  msg->data_len;
 }
 
+
+/* msgb data comparison helpers */
+
+/*! Compare: check data in msgb against given data
+ *  \param[in] msg message buffer
+ *  \param[in] data expected data
+ *  \param[in] len length of data
+ *  \returns boolean indicating whether msgb content is equal to the given data
+ */
+#define msgb_eq_data(msg, data, len)				\
+	_msgb_eq(__FILE__, __LINE__, __func__, 0, msg, data, len, false)
+
+/*! Compare: check L1 data in msgb against given data
+ *  \param[in] msg message buffer
+ *  \param[in] data expected L1 data
+ *  \param[in] len length of data
+ *  \returns boolean indicating whether msgb L1 content is equal to the given data
+ */
+#define msgb_eq_l1_data(msg, data, len)				\
+	_msgb_eq(__FILE__, __LINE__, __func__, 1, msg, data, len, false)
+
+/*! Compare: check L2 data in msgb against given data
+ *  \param[in] msg message buffer
+ *  \param[in] data expected L2 data
+ *  \param[in] len length of data
+ *  \returns boolean indicating whether msgb L2 content is equal to the given data
+ */
+#define msgb_eq_l2_data(msg, data, len)				\
+	_msgb_eq(__FILE__, __LINE__, __func__, 2, msg, data, len, false)
+
+/*! Compare: check L3 data in msgb against given data
+ *  \param[in] msg message buffer
+ *  \param[in] data expected L3 data
+ *  \param[in] len length of data
+ *  \returns boolean indicating whether msgb L3 content is equal to the given data
+ */
+#define msgb_eq_l3_data(msg, data, len)				\
+	_msgb_eq(__FILE__, __LINE__, __func__, 3, msg, data, len, false)
+
+/*! Compare: check L4 data in msgb against given data
+ *  \param[in] msg message buffer
+ *  \param[in] data expected L4 data
+ *  \param[in] len length of data
+ *  \returns boolean indicating whether msgb L4 content is equal to the given data
+ */
+#define msgb_eq_l4_data(msg, data, len)				\
+	_msgb_eq(__FILE__, __LINE__, __func__, 4, msg, data, len, false)
+
+
+/* msgb test/debug helpers */
+
+/*! Compare and print: check data in msgb against given data and print errors if any
+ *  \param[in] msg message buffer
+ *  \param[in] data expected data
+ *  \param[in] len length of data
+ *  \returns boolean indicating whether msgb content is equal to the given data
+ */
+#define msgb_eq_data_print(msg, data, len)				\
+	_msgb_eq(__FILE__, __LINE__, __func__, 0, msg, data, len, true)
+
+/*! Compare and print: check L1 data in msgb against given data and print errors if any
+ *  \param[in] msg message buffer
+ *  \param[in] data expected L1 data
+ *  \param[in] len length of data
+ *  \returns boolean indicating whether msgb L1 content is equal to the given data
+ */
+#define msgb_eq_l1_data_print(msg, data, len)				\
+	_msgb_eq(__FILE__, __LINE__, __func__, 1, msg, data, len, true)
+
+/*! Compare and print: check L2 data in msgb against given data and print errors if any
+ *  \param[in] msg message buffer
+ *  \param[in] data expected L2 data
+ *  \param[in] len length of data
+ *  \returns boolean indicating whether msgb L2 content is equal to the given data
+ */
+#define msgb_eq_l2_data_print(msg, data, len)				\
+	_msgb_eq(__FILE__, __LINE__, __func__, 2, msg, data, len, true)
+
+/*! Compare and print: check L3 data in msgb against given data and print errors if any
+ *  \param[in] msg message buffer
+ *  \param[in] data expected L3 data
+ *  \param[in] len length of data
+ *  \returns boolean indicating whether msgb L3 content is equal to the given data
+ */
+#define msgb_eq_l3_data_print(msg, data, len)				\
+	_msgb_eq(__FILE__, __LINE__, __func__, 3, msg, data, len, true)
+
+
+/*! Compare and print: check L4 data in msgb against given data and print errors if any
+ *  \param[in] msg message buffer
+ *  \param[in] data expected L4 data
+ *  \param[in] len length of data
+ *  \returns boolean indicating whether msgb L4 content is equal to the given data
+ */
+#define msgb_eq_l4_data_print(msg, data, len)				\
+	_msgb_eq(__FILE__, __LINE__, __func__, 4, msg, data, len, true)
+
+bool _msgb_eq(const char *file, size_t line, const char *func, uint8_t level,
+	      const struct msgb *msg, const uint8_t *data, size_t len, bool print);
+
+
+/* msgb data comparison */
+
+/*! Compare msgbs
+ *  \param[in] msg1 message buffer
+ *  \param[in] msg2 reference message buffer
+ *  \returns boolean indicating whether msgb content is equal
+ */
+#define msgb_eq(msg1, msgb2, len) msgb_eq_data(msg1, msgb_data(msg2), msgb_length(msg2))
+
+/*! Compare msgbs L1 content
+ *  \param[in] msg1 message buffer
+ *  \param[in] msg2 reference message buffer
+ *  \returns boolean indicating whether msgb L1 content is equal
+ */
+#define msgb_eq_l1(msg1, msgb2, len) msgb_eq_l1_data(msg1, msgb_l1(msg2), msgb_l1len(msg2))
+
+/*! Compare msgbs L2 content
+ *  \param[in] msg1 message buffer
+ *  \param[in] msg2 reference message buffer
+ *  \returns boolean indicating whether msgb L2 content is equal
+ */
+#define msgb_eq_l2(msg1, msgb2, len) msgb_eq_l2_data(msg1, msgb_l2(msg2), msgb_l2len(msg2))
+
+/*! Compare msgbs L3 content
+ *  \param[in] msg1 message buffer
+ *  \param[in] msg2 reference message buffer
+ *  \returns boolean indicating whether msgb L3 content is equal
+ */
+#define msgb_eq_l3(msg1, msgb2, len) msgb_eq_l3_data(msg1, msgb_l3(msg2), msgb_l3len(msg2))
+
+/*! Compare msgbs L4 content
+ *  \param[in] msg1 message buffer
+ *  \param[in] msg2 reference message buffer
+ *  \returns boolean indicating whether msgb L4 content is equal
+ */
+#define msgb_eq_l4(msg1, msgb2, len) msgb_eq_l4_data(msg1, msgb_l4(msg2), msgb_l4len(msg2))
+
+
 /* non inline functions to ease binding */
 
 uint8_t *msgb_data(const struct msgb *msg);
@@ -510,6 +706,13 @@ uint8_t *msgb_data(const struct msgb *msg);
 void *msgb_talloc_ctx_init(void *root_ctx, unsigned int pool_size);
 void msgb_set_talloc_ctx(void *ctx) OSMO_DEPRECATED("Use msgb_talloc_ctx_init() instead");
 int msgb_printf(struct msgb *msgb, const char *format, ...);
+
+static inline const char *msgb_hexdump_l1(const struct msgb *msg)
+{
+	if (!msgb_l1(msg) || !(msgb_l1len(msg)))
+		return "[]";
+	return osmo_hexdump((const unsigned char *) msgb_l1(msg), msgb_l1len(msg));
+}
 
 static inline const char *msgb_hexdump_l2(const struct msgb *msg)
 {
@@ -523,6 +726,13 @@ static inline const char *msgb_hexdump_l3(const struct msgb *msg)
 	if (!msgb_l3(msg) || !(msgb_l3len(msg)))
 		return "[]";
 	return osmo_hexdump((const unsigned char*) msgb_l3(msg), msgb_l3len(msg));
+}
+
+static inline const char *msgb_hexdump_l4(const struct msgb *msg)
+{
+	if (!msgb_l4(msg) || !(msgb_l4len(msg)))
+		return "[]";
+	return osmo_hexdump((const unsigned char*) msgb_l4(msg), msgb_l4len(msg));
 }
 
 /*! @} */

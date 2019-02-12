@@ -129,6 +129,47 @@ uint8_t osmo_char2bcd(char c)
 		return 0;
 }
 
+/*! Convert BCD to string.
+ * The given nibble offsets are interpreted in BCD order, i.e. nibble 0 is bcd[0] & 0xf, nibble 1 is bcd[0] >> 4, nibble
+ * 3 is bcd[1] & 0xf, etc..
+ *  \param[out] dst  Output string buffer, is always nul terminated when dst_size > 0.
+ *  \param[in] dst_size  sizeof() the output string buffer.
+ *  \param[in] bcd  Binary coded data buffer.
+ *  \param[in] start_nibble  Offset to start from, in nibbles, typically 1 to skip the first nibble.
+ *  \param[in] end_nibble  Offset to stop before, in nibbles, e.g. sizeof(bcd)*2 - (bcd[0] & GSM_MI_ODD? 0:1).
+ *  \param[in] allow_hex  If false, return error if there are digits other than 0-9. If true, return those as [A-F].
+ *  \returns The strlen that would be written if the output buffer is large enough, excluding nul byte (like
+ *           snprintf()), or -EINVAL if allow_hex is false and a digit > 9 is encountered. On -EINVAL, the conversion is
+ *           still completed as if allow_hex were passed as true. Return -ENOMEM if dst is NULL or dst_size is zero.
+ *           If end_nibble <= start_nibble, write an empty string to dst and return 0.
+ */
+int osmo_bcd2str(char *dst, size_t dst_size, const uint8_t *bcd, int start_nibble, int end_nibble, bool allow_hex)
+{
+	char *dst_end = dst + dst_size - 1;
+	int nibble_i;
+	int rc = 0;
+
+	if (!dst || dst_size < 1)
+		return -ENOMEM;
+
+	for (nibble_i = start_nibble; nibble_i < end_nibble && dst < dst_end; nibble_i++, dst++) {
+		uint8_t nibble = bcd[nibble_i >> 1];
+		if ((nibble_i & 1))
+			nibble >>= 4;
+		nibble &= 0xf;
+
+		if (!allow_hex && nibble > 9)
+			rc = -EINVAL;
+
+		*dst = osmo_bcd2char(nibble);
+	}
+	*dst = '\0';
+
+	if (rc < 0)
+		return rc;
+	return OSMO_MAX(0, end_nibble - start_nibble);
+}
+
 /*! Parse a string containing hexadecimal digits
  *  \param[in] str string containing ASCII encoded hexadecimal digits
  *  \param[out] b output buffer
@@ -178,30 +219,55 @@ int osmo_hexparse(const char *str, uint8_t *b, int max_len)
 static char hexd_buff[4096];
 static const char hex_chars[] = "0123456789abcdef";
 
-static char *_osmo_hexdump(const unsigned char *buf, int len, char *delim)
+/*! Convert binary sequence to hexadecimal ASCII string.
+ *  \param[out] out_buf  Output buffer to write the resulting string to.
+ *  \param[in] out_buf_size  sizeof(out_buf).
+ *  \param[in] buf  Input buffer, pointer to sequence of bytes.
+ *  \param[in] len  Length of input buf in number of bytes.
+ *  \param[in] delim  String to separate each byte; NULL or "" for no delim.
+ *  \param[in] delim_after_last  If true, end the string in delim (true: "1a:ef:d9:", false: "1a:ef:d9");
+ *                               if out_buf has insufficient space, the string will always end in a delim.
+ *  \returns out_buf, containing a zero-terminated string, or "" (empty string) if out_buf == NULL or out_buf_size < 1.
+ *
+ * This function will print a sequence of bytes as hexadecimal numbers, adding one delim between each byte (e.g. for
+ * delim passed as ":", return a string like "1a:ef:d9").
+ *
+ * The delim_after_last argument exists to be able to exactly show the original osmo_hexdump() behavior, which always
+ * ends the string with a delimiter.
+ */
+const char *osmo_hexdump_buf(char *out_buf, size_t out_buf_size, const unsigned char *buf, int len, const char *delim,
+			     bool delim_after_last)
 {
 	int i;
-	char *cur = hexd_buff;
+	char *cur = out_buf;
+	size_t delim_len;
 
-	hexd_buff[0] = 0;
+	if (!out_buf || !out_buf_size)
+		return "";
+
+	delim = delim ? : "";
+	delim_len = strlen(delim);
+
 	for (i = 0; i < len; i++) {
 		const char *delimp = delim;
-		int len_remain = sizeof(hexd_buff) - (cur - hexd_buff);
-		if (len_remain < 3)
+		int len_remain = out_buf_size - (cur - out_buf) - 1;
+		if (len_remain < (2 + delim_len)
+		    && !(!delim_after_last && i == (len - 1) && len_remain >= 2))
 			break;
 
 		*cur++ = hex_chars[buf[i] >> 4];
 		*cur++ = hex_chars[buf[i] & 0xf];
 
+		if (i == (len - 1) && !delim_after_last)
+			break;
+
 		while (len_remain > 1 && *delimp) {
 			*cur++ = *delimp++;
 			len_remain--;
 		}
-
-		*cur = 0;
 	}
-	hexd_buff[sizeof(hexd_buff)-1] = 0;
-	return hexd_buff;
+	*cur = '\0';
+	return out_buf;
 }
 
 /*! Convert a sequence of unpacked bits to ASCII string
@@ -251,7 +317,8 @@ char *osmo_ubit_dump(const uint8_t *bits, unsigned int len)
  */
 char *osmo_hexdump(const unsigned char *buf, int len)
 {
-	return _osmo_hexdump(buf, len, " ");
+	osmo_hexdump_buf(hexd_buff, sizeof(hexd_buff), buf, len, " ", true);
+	return hexd_buff;
 }
 
 /*! Convert binary sequence to hexadecimal ASCII string
@@ -267,7 +334,8 @@ char *osmo_hexdump(const unsigned char *buf, int len)
  */
 char *osmo_hexdump_nospc(const unsigned char *buf, int len)
 {
-	return _osmo_hexdump(buf, len, "");
+	osmo_hexdump_buf(hexd_buff, sizeof(hexd_buff), buf, len, "", true);
+	return hexd_buff;
 }
 
 /* Compat with previous typo to preserve abi */
@@ -557,8 +625,8 @@ const char *osmo_escape_str(const char *str, int in_len)
 /*! Like osmo_escape_str(), but returns double-quotes around a string, or "NULL" for a NULL string.
  * This allows passing any char* value and get its C representation as string.
  * \param[in] str  A string that may contain any characters.
- * \param[in] len  Pass -1 to print until nul char, or >= 0 to force a length.
- * \returns buf containing an escaped representation, possibly truncated, or str itself.
+ * \param[in] in_len  Pass -1 to print until nul char, or >= 0 to force a length.
+ * \returns buf containing a quoted and escaped representation, possibly truncated.
  */
 const char *osmo_quote_str_buf(const char *str, int in_len, char *buf, size_t bufsize)
 {
@@ -587,6 +655,12 @@ const char *osmo_quote_str_buf(const char *str, int in_len, char *buf, size_t bu
 	return buf;
 }
 
+/*! Like osmo_quote_str_buf() but returns the result in a static buffer.
+ * The static buffer is shared with get_value_string() and osmo_escape_str().
+ * \param[in] str  A string that may contain any characters.
+ * \param[in] in_len  Pass -1 to print until nul char, or >= 0 to force a length.
+ * \returns static buffer containing a quoted and escaped representation, possibly truncated.
+ */
 const char *osmo_quote_str(const char *str, int in_len)
 {
 	return osmo_quote_str_buf(str, in_len, namebuf, sizeof(namebuf));
@@ -630,6 +704,123 @@ uint32_t osmo_isqrt32(uint32_t x)
 		g1 = (g0 + (x/g0)) >> 1;
 	}
 	return g0;
+}
+
+/*! Convert a string to lowercase, while checking buffer size boundaries.
+ * The result written to \a dest is guaranteed to be nul terminated if \a dest_len > 0.
+ * If dest == src, the string is converted in-place, if necessary truncated at dest_len - 1 characters
+ * length as well as nul terminated.
+ * Note: similar osmo_str2lower(), but safe to use for src strings of arbitrary length.
+ *  \param[out] dest  Target buffer to write lowercase string.
+ *  \param[in] dest_len  Maximum buffer size of dest (e.g. sizeof(dest)).
+ *  \param[in] src  String to convert to lowercase.
+ *  \returns Length of \a src, like osmo_strlcpy(), but if \a dest == \a src at most \a dest_len - 1.
+ */
+size_t osmo_str_tolower_buf(char *dest, size_t dest_len, const char *src)
+{
+	size_t rc;
+	if (dest == src) {
+		if (dest_len < 1)
+			return 0;
+		dest[dest_len - 1] = '\0';
+		rc = strlen(dest);
+	} else {
+		if (dest_len < 1)
+			return strlen(src);
+		rc = osmo_strlcpy(dest, src, dest_len);
+	}
+	for (; *dest; dest++)
+		*dest = tolower(*dest);
+	return rc;
+}
+
+/*! Convert a string to lowercase, using a static buffer.
+ * The resulting string may be truncated if the internally used static buffer is shorter than src.
+ * The internal buffer is at least 128 bytes long, i.e. guaranteed to hold at least 127 characters and a
+ * terminating nul.
+ * See also osmo_str_tolower_buf().
+ * \param[in] src  String to convert to lowercase.
+ * \returns Resulting lowercase string in a static buffer, always nul terminated.
+ */
+const char *osmo_str_tolower(const char *src)
+{
+	static char buf[128];
+	osmo_str_tolower_buf(buf, sizeof(buf), src);
+	return buf;
+}
+
+/*! Convert a string to uppercase, while checking buffer size boundaries.
+ * The result written to \a dest is guaranteed to be nul terminated if \a dest_len > 0.
+ * If dest == src, the string is converted in-place, if necessary truncated at dest_len - 1 characters
+ * length as well as nul terminated.
+ * Note: similar osmo_str2upper(), but safe to use for src strings of arbitrary length.
+ *  \param[out] dest  Target buffer to write uppercase string.
+ *  \param[in] dest_len  Maximum buffer size of dest (e.g. sizeof(dest)).
+ *  \param[in] src  String to convert to uppercase.
+ *  \returns Length of \a src, like osmo_strlcpy(), but if \a dest == \a src at most \a dest_len - 1.
+ */
+size_t osmo_str_toupper_buf(char *dest, size_t dest_len, const char *src)
+{
+	size_t rc;
+	if (dest == src) {
+		if (dest_len < 1)
+			return 0;
+		dest[dest_len - 1] = '\0';
+		rc = strlen(dest);
+	} else {
+		if (dest_len < 1)
+			return strlen(src);
+		rc = osmo_strlcpy(dest, src, dest_len);
+	}
+	for (; *dest; dest++)
+		*dest = toupper(*dest);
+	return rc;
+}
+
+/*! Convert a string to uppercase, using a static buffer.
+ * The resulting string may be truncated if the internally used static buffer is shorter than src.
+ * The internal buffer is at least 128 bytes long, i.e. guaranteed to hold at least 127 characters and a
+ * terminating nul.
+ * See also osmo_str_toupper_buf().
+ * \param[in] src  String to convert to uppercase.
+ * \returns Resulting uppercase string in a static buffer, always nul terminated.
+ */
+const char *osmo_str_toupper(const char *src)
+{
+	static char buf[128];
+	osmo_str_toupper_buf(buf, sizeof(buf), src);
+	return buf;
+}
+
+/*! Calculate the Luhn checksum (as used for IMEIs).
+ * \param[in] in  Input digits in ASCII string representation.
+ * \param[in] in_len  Count of digits to use for the input (14 for IMEI).
+ * \returns checksum char (e.g. '3'); negative on error
+ */
+const char osmo_luhn(const char* in, int in_len)
+{
+	int i, sum = 0;
+
+	/* All input must be numbers */
+	for (i = 0; i < in_len; i++) {
+		if (!isdigit(in[i]))
+			return -EINVAL;
+	}
+
+	/* Double every second digit and add it to sum */
+	for (i = in_len - 1; i >= 0; i -= 2) {
+		int dbl = (in[i] - '0') * 2;
+		if (dbl > 9)
+			dbl -= 9;
+		sum += dbl;
+	}
+
+	/* Add other digits to sum */
+	for (i = in_len - 2; i >= 0; i -= 2)
+		sum += in[i] - '0';
+
+	/* Final checksum */
+	return (sum * 9) % 10 + '0';
 }
 
 /*! @} */

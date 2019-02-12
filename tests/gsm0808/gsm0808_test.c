@@ -22,6 +22,8 @@
 #include <osmocom/gsm/gsm0808_utils.h>
 #include <osmocom/gsm/protocol/gsm_08_08.h>
 #include <osmocom/gsm/protocol/gsm_08_58.h>
+#include <osmocom/core/logging.h>
+#include <osmocom/core/application.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,18 +32,17 @@
 #include <arpa/inet.h>
 #include <errno.h>
 
-#define VERIFY(msg, data, len) 						\
-	if (msgb_l3len(msg) != len) {					\
-		printf("%s:%d Length don't match: %d vs. %d. %s\n", 	\
-			__func__, __LINE__, msgb_l3len(msg), (int) len,	\
-			osmo_hexdump(msg->l3h, msgb_l3len(msg))); 	\
-		abort();						\
-	} else if (memcmp(msg->l3h, data, len) != 0) {			\
-		printf("%s:%d didn't match: got: %s\n",			\
-			__func__, __LINE__,				\
-			osmo_hexdump(msg->l3h, msgb_l3len(msg)));	\
-		abort();						\
-	}
+#define EXPECT_ENCODED(hexstr) do { \
+		const char *enc_str = msgb_hexdump(msg); \
+		printf("%s: encoded: %s(rc = %u)\n", __func__, enc_str, rc_enc); \
+		OSMO_ASSERT(strcmp(enc_str, hexstr " ") == 0); \
+		OSMO_ASSERT(rc_enc == msg->len); \
+	} while(0)
+
+#define VERIFY(msg, data, data_len) do { \
+		if (!msgb_eq_l3_data_print(msg, data, data_len)) \
+			abort(); \
+	} while(0)
 
 /* Setup a fake codec list for testing */
 static void setup_codec_list(struct gsm0808_speech_codec_list *scl)
@@ -63,6 +64,27 @@ static void setup_codec_list(struct gsm0808_speech_codec_list *scl)
 	scl->codec[2].cfg = 0xc0;
 
 	scl->len = 3;
+}
+
+void test_gsm0808_enc_cause(void)
+{
+	/* NOTE: This must be tested early because many of the following tests
+	 * rely on the generation of a proper cause code. */
+
+	uint8_t rc_enc;
+	struct msgb *msg;
+
+	/* Test with a single byte cause code */
+	msg = msgb_alloc(1024, "output buffer");
+	rc_enc = gsm0808_enc_cause(msg, 0x41);
+	EXPECT_ENCODED("04 01 41");
+	msgb_free(msg);
+
+	/* Test with an extended (two byte) cause code */
+	msg = msgb_alloc(1024, "output buffer");
+	rc_enc = gsm0808_enc_cause(msg, 0x8041);
+	EXPECT_ENCODED("04 02 80 41");
+	msgb_free(msg);
 }
 
 static void test_create_layer3(void)
@@ -102,7 +124,16 @@ static void test_create_layer3_aoip()
 		0xef, 0xcd, GSM0808_SCT_FR2 | 0xa0, 0x9f,
 		GSM0808_SCT_CSD | 0x90, 0xc0
 	};
-
+	struct osmo_cell_global_id cgi = {
+		.lai = {
+			.plmn = {
+				.mcc = 0x2244,
+				.mnc = 0x1122,
+			},
+			.lac = 0x3366,
+		},
+		.cell_identity = 0x4488,
+	};
 	struct msgb *msg, *in_msg;
 	struct gsm0808_speech_codec_list sc_list;
 	printf("Testing creating Layer3 (AoIP)\n");
@@ -113,9 +144,8 @@ static void test_create_layer3_aoip()
 	in_msg->l3h = in_msg->data;
 	msgb_v_put(in_msg, 0x23);
 
-	msg =
-	    gsm0808_create_layer3_aoip(in_msg, 0x1122, 0x2244, 0x3366, 0x4488,
-				       &sc_list);
+	msg = gsm0808_create_layer3_2(in_msg, &cgi, &sc_list);
+
 	VERIFY(msg, res, ARRAY_SIZE(res));
 
 	msgb_free(msg);
@@ -242,14 +272,55 @@ static void test_create_cipher_complete()
 	msgb_free(l3);
 }
 
+static inline void parse_cipher_reject(struct msgb *msg, uint8_t exp)
+{
+	struct tlv_parsed tp;
+	int rc;
+
+	/* skip header and message type so we can parse Cause IE directly */
+	msg->l2h = msgb_data(msg) + sizeof(struct bssmap_header) + 1;
+
+	rc = osmo_bssap_tlv_parse(&tp, msg->l2h, msgb_l2len(msg));
+	if (rc < 0)
+		printf("FIXME: failed (%d) to parse created message %s\n", rc, msgb_hexdump(msg));
+
+	rc = gsm0808_get_cipher_reject_cause(&tp);
+	if (rc < 0)
+		printf("FIXME: failed (%s) to extract Cause from created message %s\n",
+		       strerror(-rc), msgb_hexdump(msg));
+
+	if (exp != (enum gsm0808_cause)rc)
+		printf("FIXME: wrong Cause %d != %u (" OSMO_BIN_SPEC ") extracted from created message %s\n",
+		       rc, exp, OSMO_BIT_PRINT(exp), msgb_hexdump(msg));
+}
+
 static void test_create_cipher_reject()
 {
 	static const uint8_t res[] = { 0x00, 0x04, 0x59, 0x04, 0x01, 0x23 };
+	enum gsm0808_cause cause = GSM0808_CAUSE_CCCH_OVERLOAD;
 	struct msgb *msg;
 
 	printf("Testing creating Cipher Reject\n");
-	msg = gsm0808_create_cipher_reject(0x23);
+	msg = gsm0808_create_cipher_reject(cause);
 	VERIFY(msg, res, ARRAY_SIZE(res));
+
+	parse_cipher_reject(msg, cause);
+
+	msgb_free(msg);
+}
+
+static void test_create_cipher_reject_ext()
+{
+	static const uint8_t res[] = { 0x00, 0x05, 0x59, 0x04, 0x02, 0xd0, 0xFA };
+	uint8_t cause = 0xFA;
+	struct msgb *msg;
+
+	printf("Testing creating Cipher Reject (extended)\n");
+	msg = gsm0808_create_cipher_reject_ext(GSM0808_CAUSE_CLASS_INVAL, cause);
+	VERIFY(msg, res, ARRAY_SIZE(res));
+
+	parse_cipher_reject(msg, cause);
+
 	msgb_free(msg);
 }
 
@@ -336,6 +407,83 @@ static void test_create_ass()
 	msgb_free(msg);
 }
 
+static void test_create_ass2()
+{
+	static const uint8_t res[] = {
+		BSSAP_MSG_BSS_MANAGEMENT,
+		0x45,
+		BSS_MAP_MSG_ASSIGMENT_RQST,
+		GSM0808_IE_CHANNEL_TYPE,
+		0x04, 0x01, 0x0b, 0x91, 0x15, 0x01, 0x00, 0x04,
+		GSM0808_IE_AOIP_TRASP_ADDR,
+		0x06,
+		0xac, 0x0c, 0x65, 0x0d, /* IPv4 */
+		0x02, 0x9a,
+		GSM0808_IE_SPEECH_CODEC_LIST,
+		0x07,
+		GSM0808_SCT_FR3 | 0x50,
+		0xef, 0xcd,
+		GSM0808_SCT_FR2 | 0xa0,
+		0x9f,
+		GSM0808_SCT_CSD | 0x90,
+		0xc0,
+		GSM0808_IE_CALL_ID,
+		0xde, 0xad, 0xfa, 0xce, /* CallID */
+		0x83, 0x45, 0x45, 0x45, 0x45, 0x45, 0x45, 0x45, 0x45, 0x45, 0x45, 0x45, 0x45, 0x45, 0x45, 0x45, 0x45, /* Kc */
+		GSM0808_IE_GLOBAL_CALL_REF, 0x0d, /* GCR, length */
+		0x03, 0x44, 0x44, 0x44, /* GCR, Net ID */
+		0x02, 0xfe, 0xed, /* GCR, Node ID */
+		0x05, 0x41, 0x41, 0x41, 0x41, 0x41, /* GCR, Call ref. ID */
+		GSM0808_IE_LCLS_CONFIG, GSM0808_LCLS_CFG_BOTH_WAY,
+		GSM0808_IE_LCLS_CONN_STATUS_CTRL, GSM0808_LCLS_CSC_CONNECT,
+		GSM0808_IE_LCLS_CORR_NOT_NEEDED,
+	};
+	struct msgb *msg;
+	struct gsm0808_channel_type ct;
+	uint16_t cic = 4;
+	struct sockaddr_storage ss;
+	struct sockaddr_in sin;
+	struct gsm0808_speech_codec_list sc_list;
+	uint32_t call_id = 0xDEADFACE;
+	uint8_t Kc[16];
+	struct osmo_lcls lcls = {
+		.config = GSM0808_LCLS_CFG_BOTH_WAY,
+		.control = GSM0808_LCLS_CSC_CONNECT,
+		.gcr = { .net_len = 3, .node = 0xFEED },
+		.gcr_available = true,
+		.corr_needed = false
+	};
+
+	memset(lcls.gcr.cr, 'A', 5);
+	memset(lcls.gcr.net, 'D', lcls.gcr.net_len);
+	memset(Kc, 'E', 16);
+
+	memset(&ct, 0, sizeof(ct));
+	ct.ch_indctr = GSM0808_CHAN_SPEECH;
+	ct.ch_rate_type = GSM0808_SPEECH_HALF_PREF;
+	ct.perm_spch[0] = GSM0808_PERM_FR2;
+	ct.perm_spch[1] = GSM0808_PERM_HR2;
+	ct.perm_spch_len = 2;
+
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_port = htons(666);
+	inet_aton("172.12.101.13", &sin.sin_addr); /* IPv4 */
+
+	memset(&ss, 0, sizeof(ss));
+	memcpy(&ss, &sin, sizeof(sin));
+
+	setup_codec_list(&sc_list);
+
+	printf("Testing creating Assignment Request with Kc and LCLS\n");
+
+	msg = gsm0808_create_ass2(&ct, &cic, &ss, &sc_list, &call_id, Kc, &lcls);
+	if (!msgb_eq_l3_data_print(msg, res, ARRAY_SIZE(res)))
+		abort();
+
+	msgb_free(msg);
+}
+
 static void test_create_ass_compl()
 {
 	static const uint8_t res1[] = {
@@ -362,11 +510,12 @@ static void test_create_ass_compl_aoip()
 	struct gsm0808_speech_codec sc;
 	struct gsm0808_speech_codec_list sc_list;
 	static const uint8_t res[] =
-	    { 0x00, 0x1d, 0x02, 0x15, 0x23, 0x21, 0x42, 0x2c, 0x11, 0x40, 0x22,
+	    { 0x00, 0x1f, 0x02, 0x15, 0x23, 0x21, 0x42, 0x2c, 0x11, 0x40, 0x22,
 	      GSM0808_IE_AOIP_TRASP_ADDR, 0x06, 0xc0, 0xa8, 0x64, 0x17, 0x04,
 	      0xd2, GSM0808_IE_SPEECH_CODEC, 0x01, GSM0808_SCT_HR1 | 0x90,
 	      GSM0808_IE_SPEECH_CODEC_LIST, 0x07, GSM0808_SCT_FR3 | 0x50, 0xef,
-	      0xcd, GSM0808_SCT_FR2 | 0xa0, 0x9f, GSM0808_SCT_CSD | 0x90, 0xc0 };
+	      0xcd, GSM0808_SCT_FR2 | 0xa0, 0x9f, GSM0808_SCT_CSD | 0x90, 0xc0,
+	      GSM0808_IE_LCLS_BSS_STATUS, GSM0808_LCLS_STS_LOCALLY_SWITCHED };
 	struct msgb *msg;
 
 	memset(&sin, 0, sizeof(sin));
@@ -385,8 +534,8 @@ static void test_create_ass_compl_aoip()
 	setup_codec_list(&sc_list);
 
 	printf("Testing creating Assignment Complete (AoIP)\n");
-	msg = gsm0808_create_ass_compl(0x23, 0x42, 0x11, 0x22,
-				       &ss, &sc, &sc_list);
+	msg = gsm0808_create_ass_compl2(0x23, 0x42, 0x11, 0x22,
+					&ss, &sc, &sc_list, GSM0808_LCLS_STS_LOCALLY_SWITCHED);
 	VERIFY(msg, res, ARRAY_SIZE(res));
 	msgb_free(msg);
 }
@@ -518,6 +667,83 @@ static void test_prepend_dtap()
 	in_msg->l3h = in_msg->data;
 	VERIFY(in_msg, res, ARRAY_SIZE(res));
 	msgb_free(in_msg);
+}
+
+static void test_enc_dec_lcls()
+{
+	static const uint8_t res[] = {
+		GSM0808_IE_GLOBAL_CALL_REF,
+		0x0d, /* GCR length */
+		0x03, /* .net_len */
+		0xf1, 0xf2, 0xf3, /* .net */
+		0x02, /* .node length */
+		0xde, 0xad, /* .node */
+		0x05, /* length of Call. Ref. */
+		0x41, 0x42, 0x43, 0x44, 0x45 /* .cr - Call. Ref. */
+	};
+	uint8_t len;
+	struct msgb *msg;
+	int rc;
+	struct tlv_parsed tp;
+	struct osmo_lcls *lcls_out, lcls_in = {
+		.gcr = {
+			.net_len = 3,
+			.net = { 0xf1, 0xf2, 0xf3 },
+			.node = 0xDEAD,
+			.cr = { 0x41, 0x42, 0x43, 0x44, 0x45 },
+		},
+		.gcr_available = true,
+		.config = GSM0808_LCLS_CFG_NA,
+		.control = GSM0808_LCLS_CSC_NA,
+		.corr_needed = true,
+	};
+
+	msg = msgb_alloc_headroom(BSSMAP_MSG_SIZE, BSSMAP_MSG_HEADROOM, "LCLS IE");
+	if (!msg)
+		return;
+
+	lcls_out = talloc_zero(msg, struct osmo_lcls);
+	if (!lcls_out)
+		return;
+
+	len = gsm0808_enc_lcls(msg, &lcls_in);
+	printf("Testing Global Call Reference IE encoder...\n\t%d bytes added: %s\n",
+	       len, len == ARRAY_SIZE(res) ? "OK" : "FAIL");
+
+	if (!msgb_eq_data_print(msg, res, ARRAY_SIZE(res)))
+		abort();
+
+	rc = osmo_bssap_tlv_parse(&tp, msgb_data(msg), msgb_length(msg));
+	if (rc < 0) {
+		printf("parsing failed: %s [%s]\n", strerror(-rc), msgb_hexdump(msg));
+		abort();
+	}
+
+	rc = gsm0808_dec_lcls(lcls_out, &tp);
+	if (rc < 0) {
+		printf("decoding failed: %s [%s]\n", strerror(-rc), msgb_hexdump(msg));
+		abort();
+	}
+
+	if (lcls_out->config != lcls_in.config) {
+		printf("LCLS Config parsed wrong: %s != %s\n",
+		       gsm0808_lcls_config_name(lcls_out->config), gsm0808_lcls_config_name(lcls_in.config));
+                abort();
+        }
+
+	if (lcls_out->control != lcls_in.control) {
+		printf("LCLS Control parsed wrong: %s != %s\n",
+		       gsm0808_lcls_control_name(lcls_out->control), gsm0808_lcls_control_name(lcls_in.control));
+                abort();
+        }
+
+	if (!osmo_gcr_eq(&lcls_out->gcr, &lcls_in.gcr)) {
+		printf("GCR parsed wrong.\n");
+                abort();
+        }
+
+	printf("\tdecoded %d bytes: %s\n", rc, rc == len ? "OK" : "FAIL");
+	msgb_free(msg);
 }
 
 static void test_enc_dec_aoip_trasp_addr_v4()
@@ -695,6 +921,28 @@ static void test_gsm0808_enc_dec_speech_codec_list()
 	msgb_free(msg);
 }
 
+static void test_gsm0808_enc_dec_empty_speech_codec_list()
+{
+	struct gsm0808_speech_codec_list enc_scl = {
+		.len = 0,
+	};
+	struct gsm0808_speech_codec_list dec_scl = {};
+	struct msgb *msg;
+	uint8_t rc_enc;
+	int rc_dec;
+
+	msg = msgb_alloc(1024, "output buffer");
+	rc_enc = gsm0808_enc_speech_codec_list(msg, &enc_scl);
+	OSMO_ASSERT(rc_enc == 2);
+
+	rc_dec = gsm0808_dec_speech_codec_list(&dec_scl, msg->data + 2, msg->len - 2);
+	OSMO_ASSERT(rc_dec == 0);
+
+	OSMO_ASSERT(memcmp(&enc_scl, &dec_scl, sizeof(enc_scl)) == 0);
+
+	msgb_free(msg);
+}
+
 static void test_gsm0808_enc_dec_channel_type()
 {
 	struct gsm0808_channel_type enc_ct = {
@@ -752,13 +1000,6 @@ static void test_gsm0808_enc_dec_encrypt_info()
 
 	msgb_free(msg);
 }
-
-#define EXPECT_ENCODED(hexstr) do { \
-		const char *enc_str = msgb_hexdump(msg); \
-		printf("%s: encoded: %s(rc = %u)\n", __func__, enc_str, rc_enc); \
-		OSMO_ASSERT(strcmp(enc_str, hexstr " ") == 0); \
-		OSMO_ASSERT(rc_enc == msg->len); \
-	} while(0)
 
 static void test_gsm0808_enc_dec_cell_id_list_lac()
 {
@@ -1444,9 +1685,535 @@ static void test_gsm0808_enc_dec_cell_id_global()
 	msgb_free(msg);
 }
 
+static void test_gsm0808_sc_cfg_from_gsm48_mr_cfg_single(struct gsm48_multi_rate_conf *cfg)
+{
+	uint16_t s15_s0;
+
+	printf("Input:\n");
+	printf(" m4_75= %u   smod=  %u\n", cfg->m4_75, cfg->smod);
+	printf(" m5_15= %u   spare= %u\n", cfg->m5_15, cfg->spare);
+	printf(" m5_90= %u   icmi=  %u\n", cfg->m5_90, cfg->icmi);
+	printf(" m6_70= %u   nscb=  %u\n", cfg->m6_70, cfg->nscb);
+	printf(" m7_40= %u   ver=   %u\n", cfg->m7_40, cfg->ver);
+	printf(" m7_95= %u\n", cfg->m7_95);
+	printf(" m10_2= %u\n", cfg->m10_2);
+	printf(" m12_2= %u\n", cfg->m12_2);
+
+	s15_s0 = gsm0808_sc_cfg_from_gsm48_mr_cfg(cfg, true);
+	printf("Result (fr):\n");
+	printf(" S15-S0 = %04x = 0b" OSMO_BIN_SPEC OSMO_BIN_SPEC "\n", s15_s0,
+	       OSMO_BIN_PRINT(s15_s0 >> 8), OSMO_BIN_PRINT(s15_s0));
+
+	s15_s0 = gsm0808_sc_cfg_from_gsm48_mr_cfg(cfg, false);
+	printf("Result (hr):\n");
+	printf(" S15-S0 = %04x = 0b" OSMO_BIN_SPEC OSMO_BIN_SPEC "\n", s15_s0,
+	       OSMO_BIN_PRINT(s15_s0 >> 8), OSMO_BIN_PRINT(s15_s0));
+
+	printf("\n");
+}
+
+static void test_gsm0808_sc_cfg_from_gsm48_mr_cfg(void)
+{
+	struct gsm48_multi_rate_conf cfg;
+
+	printf("Testing gsm0808_sc_cfg_from_gsm48_mr_cfg():\n");
+
+	memset(&cfg, 0, sizeof(cfg));
+
+	cfg.m4_75 = 0;
+	cfg.m5_15 = 0;
+	cfg.m5_90 = 0;
+	cfg.m6_70 = 0;
+	cfg.m7_40 = 0;
+	cfg.m7_95 = 0;
+	cfg.m10_2 = 0;
+	cfg.m12_2 = 0;
+	test_gsm0808_sc_cfg_from_gsm48_mr_cfg_single(&cfg);
+
+	cfg.m4_75 = 1;
+	cfg.m5_15 = 0;
+	cfg.m5_90 = 0;
+	cfg.m6_70 = 0;
+	cfg.m7_40 = 0;
+	cfg.m7_95 = 0;
+	cfg.m10_2 = 0;
+	cfg.m12_2 = 0;
+	test_gsm0808_sc_cfg_from_gsm48_mr_cfg_single(&cfg);
+
+	cfg.m4_75 = 0;
+	cfg.m5_15 = 1;
+	cfg.m5_90 = 0;
+	cfg.m6_70 = 0;
+	cfg.m7_40 = 0;
+	cfg.m7_95 = 0;
+	cfg.m10_2 = 0;
+	cfg.m12_2 = 0;
+	test_gsm0808_sc_cfg_from_gsm48_mr_cfg_single(&cfg);
+
+	cfg.m4_75 = 0;
+	cfg.m5_15 = 0;
+	cfg.m5_90 = 1;
+	cfg.m6_70 = 0;
+	cfg.m7_40 = 0;
+	cfg.m7_95 = 0;
+	cfg.m10_2 = 0;
+	cfg.m12_2 = 0;
+	test_gsm0808_sc_cfg_from_gsm48_mr_cfg_single(&cfg);
+
+	cfg.m4_75 = 0;
+	cfg.m5_15 = 0;
+	cfg.m5_90 = 0;
+	cfg.m6_70 = 1;
+	cfg.m7_40 = 0;
+	cfg.m7_95 = 0;
+	cfg.m10_2 = 0;
+	cfg.m12_2 = 0;
+	test_gsm0808_sc_cfg_from_gsm48_mr_cfg_single(&cfg);
+
+	cfg.m4_75 = 0;
+	cfg.m5_15 = 0;
+	cfg.m5_90 = 0;
+	cfg.m6_70 = 0;
+	cfg.m7_40 = 1;
+	cfg.m7_95 = 0;
+	cfg.m10_2 = 0;
+	cfg.m12_2 = 0;
+	test_gsm0808_sc_cfg_from_gsm48_mr_cfg_single(&cfg);
+
+	cfg.m4_75 = 0;
+	cfg.m5_15 = 0;
+	cfg.m5_90 = 0;
+	cfg.m6_70 = 0;
+	cfg.m7_40 = 0;
+	cfg.m7_95 = 1;
+	cfg.m10_2 = 0;
+	cfg.m12_2 = 0;
+	test_gsm0808_sc_cfg_from_gsm48_mr_cfg_single(&cfg);
+
+	cfg.m4_75 = 0;
+	cfg.m5_15 = 0;
+	cfg.m5_90 = 0;
+	cfg.m6_70 = 0;
+	cfg.m7_40 = 0;
+	cfg.m7_95 = 0;
+	cfg.m10_2 = 1;
+	cfg.m12_2 = 0;
+	test_gsm0808_sc_cfg_from_gsm48_mr_cfg_single(&cfg);
+
+	cfg.m4_75 = 0;
+	cfg.m5_15 = 0;
+	cfg.m5_90 = 0;
+	cfg.m6_70 = 0;
+	cfg.m7_40 = 0;
+	cfg.m7_95 = 0;
+	cfg.m10_2 = 0;
+	cfg.m12_2 = 1;
+	test_gsm0808_sc_cfg_from_gsm48_mr_cfg_single(&cfg);
+
+	cfg.m4_75 = 1;
+	cfg.m5_15 = 1;
+	cfg.m5_90 = 1;
+	cfg.m6_70 = 1;
+	cfg.m7_40 = 0;
+	cfg.m7_95 = 0;
+	cfg.m10_2 = 0;
+	cfg.m12_2 = 0;
+	test_gsm0808_sc_cfg_from_gsm48_mr_cfg_single(&cfg);
+
+	cfg.m4_75 = 0;
+	cfg.m5_15 = 0;
+	cfg.m5_90 = 0;
+	cfg.m6_70 = 0;
+	cfg.m7_40 = 1;
+	cfg.m7_95 = 1;
+	cfg.m10_2 = 1;
+	cfg.m12_2 = 1;
+	test_gsm0808_sc_cfg_from_gsm48_mr_cfg_single(&cfg);
+
+	cfg.m4_75 = 0;
+	cfg.m5_15 = 0;
+	cfg.m5_90 = 1;
+	cfg.m6_70 = 1;
+	cfg.m7_40 = 0;
+	cfg.m7_95 = 0;
+	cfg.m10_2 = 1;
+	cfg.m12_2 = 1;
+	test_gsm0808_sc_cfg_from_gsm48_mr_cfg_single(&cfg);
+
+	cfg.m4_75 = 1;
+	cfg.m5_15 = 1;
+	cfg.m5_90 = 0;
+	cfg.m6_70 = 0;
+	cfg.m7_40 = 1;
+	cfg.m7_95 = 1;
+	cfg.m10_2 = 0;
+	cfg.m12_2 = 0;
+	test_gsm0808_sc_cfg_from_gsm48_mr_cfg_single(&cfg);
+
+	cfg.m4_75 = 0;
+	cfg.m5_15 = 1;
+	cfg.m5_90 = 0;
+	cfg.m6_70 = 1;
+	cfg.m7_40 = 0;
+	cfg.m7_95 = 1;
+	cfg.m10_2 = 0;
+	cfg.m12_2 = 1;
+	test_gsm0808_sc_cfg_from_gsm48_mr_cfg_single(&cfg);
+
+	cfg.m4_75 = 1;
+	cfg.m5_15 = 0;
+	cfg.m5_90 = 1;
+	cfg.m6_70 = 0;
+	cfg.m7_40 = 1;
+	cfg.m7_95 = 0;
+	cfg.m10_2 = 1;
+	cfg.m12_2 = 0;
+	test_gsm0808_sc_cfg_from_gsm48_mr_cfg_single(&cfg);
+
+	cfg.m4_75 = 1;
+	cfg.m5_15 = 1;
+	cfg.m5_90 = 1;
+	cfg.m6_70 = 1;
+	cfg.m7_40 = 1;
+	cfg.m7_95 = 1;
+	cfg.m10_2 = 1;
+	cfg.m12_2 = 1;
+	test_gsm0808_sc_cfg_from_gsm48_mr_cfg_single(&cfg);
+}
+
+static void test_gsm48_mr_cfg_from_gsm0808_sc_cfg_single(uint16_t s15_s0)
+{
+	struct gsm48_multi_rate_conf cfg;
+
+	printf("Input:\n");
+	printf(" S15-S0 = %04x = 0b" OSMO_BIN_SPEC OSMO_BIN_SPEC "\n", s15_s0,
+	       OSMO_BIN_PRINT(s15_s0 >> 8), OSMO_BIN_PRINT(s15_s0));
+
+	gsm48_mr_cfg_from_gsm0808_sc_cfg(&cfg, s15_s0);
+
+	printf("Output:\n");
+	printf(" m4_75= %u   smod=  %u\n", cfg.m4_75, cfg.smod);
+	printf(" m5_15= %u   spare= %u\n", cfg.m5_15, cfg.spare);
+	printf(" m5_90= %u   icmi=  %u\n", cfg.m5_90, cfg.icmi);
+	printf(" m6_70= %u   nscb=  %u\n", cfg.m6_70, cfg.nscb);
+	printf(" m7_40= %u   ver=   %u\n", cfg.m7_40, cfg.ver);
+	printf(" m7_95= %u\n", cfg.m7_95);
+	printf(" m10_2= %u\n", cfg.m10_2);
+	printf(" m12_2= %u\n", cfg.m12_2);
+
+	printf("\n");
+}
+
+void test_gsm48_mr_cfg_from_gsm0808_sc_cfg()
+{
+	printf("Testing gsm48_mr_cfg_from_gsm0808_sc_cfg():\n");
+
+	/* Only one codec per setting */
+	test_gsm48_mr_cfg_from_gsm0808_sc_cfg_single
+	    (GSM0808_SC_CFG_DEFAULT_AMR_4_75);
+	test_gsm48_mr_cfg_from_gsm0808_sc_cfg_single
+	    (GSM0808_SC_CFG_DEFAULT_AMR_5_15);
+	test_gsm48_mr_cfg_from_gsm0808_sc_cfg_single
+	    (GSM0808_SC_CFG_DEFAULT_AMR_5_90);
+	test_gsm48_mr_cfg_from_gsm0808_sc_cfg_single
+	    (GSM0808_SC_CFG_DEFAULT_AMR_6_70);
+	test_gsm48_mr_cfg_from_gsm0808_sc_cfg_single
+	    (GSM0808_SC_CFG_DEFAULT_AMR_7_40);
+	test_gsm48_mr_cfg_from_gsm0808_sc_cfg_single
+	    (GSM0808_SC_CFG_DEFAULT_AMR_7_95);
+	test_gsm48_mr_cfg_from_gsm0808_sc_cfg_single
+	    (GSM0808_SC_CFG_DEFAULT_AMR_10_2);
+	test_gsm48_mr_cfg_from_gsm0808_sc_cfg_single
+	    (GSM0808_SC_CFG_DEFAULT_AMR_12_2);
+
+	/* Combinations */
+	test_gsm48_mr_cfg_from_gsm0808_sc_cfg_single
+	    (GSM0808_SC_CFG_DEFAULT_AMR_4_75 | GSM0808_SC_CFG_DEFAULT_AMR_6_70 |
+	     GSM0808_SC_CFG_DEFAULT_AMR_10_2);
+	test_gsm48_mr_cfg_from_gsm0808_sc_cfg_single
+	    (GSM0808_SC_CFG_DEFAULT_AMR_10_2 | GSM0808_SC_CFG_DEFAULT_AMR_12_2 |
+	     GSM0808_SC_CFG_DEFAULT_AMR_7_40);
+	test_gsm48_mr_cfg_from_gsm0808_sc_cfg_single
+	    (GSM0808_SC_CFG_DEFAULT_AMR_7_95 | GSM0808_SC_CFG_DEFAULT_AMR_12_2);
+}
+
+struct test_cell_id_matching_data {
+	struct gsm0808_cell_id id;
+	struct gsm0808_cell_id match_id;
+	bool expect_match;
+	bool expect_exact_match;
+};
+
+#define lac_23 { .id_discr = CELL_IDENT_LAC, .id.lac = 23, }
+#define lac_42 { .id_discr = CELL_IDENT_LAC, .id.lac = 42, }
+#define ci_5 { .id_discr = CELL_IDENT_CI, .id.ci = 5, }
+#define ci_6 { .id_discr = CELL_IDENT_CI, .id.ci = 6, }
+#define lac_ci_23_5 { \
+		.id_discr = CELL_IDENT_LAC_AND_CI, \
+		.id.lac_and_ci = { .lac = 23, .ci = 5, }, \
+	}
+#define lac_ci_42_6 { \
+		.id_discr = CELL_IDENT_LAC_AND_CI, \
+		.id.lac_and_ci = { .lac = 42, .ci = 6, }, \
+	}
+#define lai_23_042_23 { \
+		.id_discr = CELL_IDENT_LAI_AND_LAC, \
+		.id.lai_and_lac = { .plmn = { .mcc = 23, .mnc = 42, .mnc_3_digits = true }, .lac = 23, }, \
+	}
+#define lai_23_042_42 { \
+		.id_discr = CELL_IDENT_LAI_AND_LAC, \
+		.id.lai_and_lac = { .plmn = { .mcc = 23, .mnc = 42, .mnc_3_digits = true }, .lac = 42, }, \
+	}
+#define lai_23_99_23 { \
+		.id_discr = CELL_IDENT_LAI_AND_LAC, \
+		.id.lai_and_lac = { .plmn = { .mcc = 23, .mnc = 99, .mnc_3_digits = false }, .lac = 23, }, \
+	}
+#define lai_23_42_23 { \
+		.id_discr = CELL_IDENT_LAI_AND_LAC, \
+		.id.lai_and_lac = { .plmn = { .mcc = 23, .mnc = 42, .mnc_3_digits = false }, .lac = 23, }, \
+	}
+#define cgi_23_042_23_5 { \
+		.id_discr = CELL_IDENT_WHOLE_GLOBAL, \
+		.id.global = { \
+			.lai = { .plmn = { .mcc = 23, .mnc = 42, .mnc_3_digits = true }, .lac = 23, }, \
+			.cell_identity = 5, \
+		}, \
+	}
+#define cgi_23_042_42_6 { \
+		.id_discr = CELL_IDENT_WHOLE_GLOBAL, \
+		.id.global = { \
+			.lai = { .plmn = { .mcc = 23, .mnc = 42, .mnc_3_digits = true }, .lac = 42, }, \
+			.cell_identity = 6, \
+		}, \
+	}
+#define cgi_23_99_23_5 { \
+		.id_discr = CELL_IDENT_WHOLE_GLOBAL, \
+		.id.global = { \
+			.lai = { .plmn = { .mcc = 23, .mnc = 99, .mnc_3_digits = false }, .lac = 23, }, \
+			.cell_identity = 5, \
+		}, \
+	}
+
+
+static const struct test_cell_id_matching_data test_cell_id_matching_tests[] = {
+	{ .id = lac_23, .match_id = lac_23, .expect_match = true, .expect_exact_match = true },
+	{ .id = lac_23, .match_id = lac_42, .expect_match = false, .expect_exact_match = false },
+	{ .id = lac_23, .match_id = ci_5, .expect_match = true, .expect_exact_match = false },
+	{ .id = lac_23, .match_id = ci_6, .expect_match = true, .expect_exact_match = false },
+	{ .id = lac_23, .match_id = lac_ci_23_5, .expect_match = true, .expect_exact_match = false },
+	{ .id = lac_23, .match_id = lac_ci_42_6, .expect_match = false, .expect_exact_match = false },
+	{ .id = lac_23, .match_id = lai_23_042_23, .expect_match = true, .expect_exact_match = false },
+	{ .id = lac_23, .match_id = lai_23_042_42, .expect_match = false, .expect_exact_match = false },
+	{ .id = lac_23, .match_id = lai_23_99_23, .expect_match = true, .expect_exact_match = false },
+	{ .id = lac_23, .match_id = lai_23_42_23, .expect_match = true, .expect_exact_match = false },
+	{ .id = lac_23, .match_id = cgi_23_042_23_5, .expect_match = true, .expect_exact_match = false },
+	{ .id = lac_23, .match_id = cgi_23_042_42_6, .expect_match = false, .expect_exact_match = false },
+	{ .id = lac_23, .match_id = cgi_23_99_23_5, .expect_match = true, .expect_exact_match = false },
+	{ .id = ci_5, .match_id = lac_23, .expect_match = true, .expect_exact_match = false },
+	{ .id = ci_5, .match_id = lac_42, .expect_match = true, .expect_exact_match = false },
+	{ .id = ci_5, .match_id = ci_5, .expect_match = true, .expect_exact_match = true },
+	{ .id = ci_5, .match_id = ci_6, .expect_match = false, .expect_exact_match = false },
+	{ .id = ci_5, .match_id = lac_ci_23_5, .expect_match = true, .expect_exact_match = false },
+	{ .id = ci_5, .match_id = lac_ci_42_6, .expect_match = false, .expect_exact_match = false },
+	{ .id = ci_5, .match_id = lai_23_042_23, .expect_match = true, .expect_exact_match = false },
+	{ .id = ci_5, .match_id = lai_23_042_42, .expect_match = true, .expect_exact_match = false },
+	{ .id = ci_5, .match_id = lai_23_99_23, .expect_match = true, .expect_exact_match = false },
+	{ .id = ci_5, .match_id = lai_23_42_23, .expect_match = true, .expect_exact_match = false },
+	{ .id = ci_5, .match_id = cgi_23_042_23_5, .expect_match = true, .expect_exact_match = false },
+	{ .id = ci_5, .match_id = cgi_23_042_42_6, .expect_match = false, .expect_exact_match = false },
+	{ .id = ci_5, .match_id = cgi_23_99_23_5, .expect_match = true, .expect_exact_match = false },
+	{ .id = lac_ci_23_5, .match_id = lac_23, .expect_match = true, .expect_exact_match = false },
+	{ .id = lac_ci_23_5, .match_id = lac_42, .expect_match = false, .expect_exact_match = false },
+	{ .id = lac_ci_23_5, .match_id = ci_5, .expect_match = true, .expect_exact_match = false },
+	{ .id = lac_ci_23_5, .match_id = ci_6, .expect_match = false, .expect_exact_match = false },
+	{ .id = lac_ci_23_5, .match_id = lac_ci_23_5, .expect_match = true, .expect_exact_match = true },
+	{ .id = lac_ci_23_5, .match_id = lac_ci_42_6, .expect_match = false, .expect_exact_match = false },
+	{ .id = lac_ci_23_5, .match_id = lai_23_042_23, .expect_match = true, .expect_exact_match = false },
+	{ .id = lac_ci_23_5, .match_id = lai_23_042_42, .expect_match = false, .expect_exact_match = false },
+	{ .id = lac_ci_23_5, .match_id = lai_23_99_23, .expect_match = true, .expect_exact_match = false },
+	{ .id = lac_ci_23_5, .match_id = lai_23_42_23, .expect_match = true, .expect_exact_match = false },
+	{ .id = lac_ci_23_5, .match_id = cgi_23_042_23_5, .expect_match = true, .expect_exact_match = false },
+	{ .id = lac_ci_23_5, .match_id = cgi_23_042_42_6, .expect_match = false, .expect_exact_match = false },
+	{ .id = lac_ci_23_5, .match_id = cgi_23_99_23_5, .expect_match = true, .expect_exact_match = false },
+	{ .id = lai_23_042_23, .match_id = lac_23, .expect_match = true, .expect_exact_match = false },
+	{ .id = lai_23_042_23, .match_id = lac_42, .expect_match = false, .expect_exact_match = false },
+	{ .id = lai_23_042_23, .match_id = ci_5, .expect_match = true, .expect_exact_match = false },
+	{ .id = lai_23_042_23, .match_id = ci_6, .expect_match = true, .expect_exact_match = false },
+	{ .id = lai_23_042_23, .match_id = lac_ci_23_5, .expect_match = true, .expect_exact_match = false },
+	{ .id = lai_23_042_23, .match_id = lac_ci_42_6, .expect_match = false, .expect_exact_match = false },
+	{ .id = lai_23_042_23, .match_id = lai_23_042_23, .expect_match = true, .expect_exact_match = true },
+	{ .id = lai_23_042_23, .match_id = lai_23_042_42, .expect_match = false, .expect_exact_match = false },
+	{ .id = lai_23_042_23, .match_id = lai_23_99_23, .expect_match = false, .expect_exact_match = false },
+	{ .id = lai_23_042_23, .match_id = lai_23_42_23, .expect_match = false, .expect_exact_match = false },
+	{ .id = lai_23_042_23, .match_id = cgi_23_042_23_5, .expect_match = true, .expect_exact_match = false },
+	{ .id = lai_23_042_23, .match_id = cgi_23_042_42_6, .expect_match = false, .expect_exact_match = false },
+	{ .id = lai_23_042_23, .match_id = cgi_23_99_23_5, .expect_match = false, .expect_exact_match = false },
+	{ .id = cgi_23_042_23_5, .match_id = lac_23, .expect_match = true, .expect_exact_match = false },
+	{ .id = cgi_23_042_23_5, .match_id = lac_42, .expect_match = false, .expect_exact_match = false },
+	{ .id = cgi_23_042_23_5, .match_id = ci_5, .expect_match = true, .expect_exact_match = false },
+	{ .id = cgi_23_042_23_5, .match_id = ci_6, .expect_match = false, .expect_exact_match = false },
+	{ .id = cgi_23_042_23_5, .match_id = lac_ci_23_5, .expect_match = true, .expect_exact_match = false },
+	{ .id = cgi_23_042_23_5, .match_id = lac_ci_42_6, .expect_match = false, .expect_exact_match = false },
+	{ .id = cgi_23_042_23_5, .match_id = lai_23_042_23, .expect_match = true, .expect_exact_match = false },
+	{ .id = cgi_23_042_23_5, .match_id = lai_23_042_42, .expect_match = false, .expect_exact_match = false },
+	{ .id = cgi_23_042_23_5, .match_id = lai_23_99_23, .expect_match = false, .expect_exact_match = false },
+	{ .id = cgi_23_042_23_5, .match_id = lai_23_42_23, .expect_match = false, .expect_exact_match = false },
+	{ .id = cgi_23_042_23_5, .match_id = cgi_23_042_23_5, .expect_match = true, .expect_exact_match = true },
+	{ .id = cgi_23_042_23_5, .match_id = cgi_23_042_42_6, .expect_match = false, .expect_exact_match = false },
+	{ .id = cgi_23_042_23_5, .match_id = cgi_23_99_23_5, .expect_match = false, .expect_exact_match = false },
+};
+
+static void test_cell_id_matching()
+{
+	int i;
+	bool ok = true;
+	printf("\n%s\n", __func__);
+
+	for (i = 0; i < ARRAY_SIZE(test_cell_id_matching_tests); i++) {
+		const struct test_cell_id_matching_data *d = &test_cell_id_matching_tests[i];
+		int exact_match;
+
+		for (exact_match = 0; exact_match < 2; exact_match++) {
+			bool result;
+			bool expect_result = exact_match ? d->expect_exact_match : d->expect_match;
+
+			result = gsm0808_cell_ids_match(&d->id, &d->match_id, (bool)exact_match);
+
+			printf("[%d] %s %s %s%s\n",
+			       i,
+			       gsm0808_cell_id_name(&d->id),
+			       gsm0808_cell_id_name2(&d->match_id),
+			       result ? "MATCH" : "don't match",
+			       exact_match ? " exactly" : "");
+			if (result != expect_result) {
+				printf("  ERROR: expected %s\n", d->expect_match ? "MATCH" : "no match");
+				ok = false;
+			}
+		}
+	}
+
+	OSMO_ASSERT(ok);
+}
+
+static bool test_cell_id_list_matching_discrs(bool test_match,
+					      enum CELL_IDENT id_discr,
+					      enum CELL_IDENT list_discr)
+{
+	int i, j;
+	const struct gsm0808_cell_id *id = NULL;
+	struct gsm0808_cell_id_list2 list = {};
+	int match_idx = -1;
+	int result;
+
+	for (i = 0; i < ARRAY_SIZE(test_cell_id_matching_tests); i++) {
+		const struct test_cell_id_matching_data *d = &test_cell_id_matching_tests[i];
+		if (id_discr != d->id.id_discr)
+			continue;
+		id = &d->id;
+		break;
+	}
+
+	if (!id) {
+		printf("Did not find any entry for %s\n", gsm0808_cell_id_discr_name(id_discr));
+		return true;
+	}
+
+	/* Collect those entries with exactly this id on the left, of type list_discr on the right.
+	 * Collect the mismatches first, for more interesting match indexes in the results. */
+	for (j = 0; j < 2; j++) {
+		bool collect_matches = (bool)j;
+
+		/* If we want to have a mismatching list, don't add any entries that match. */
+		if (!test_match && collect_matches)
+			continue;
+
+		for (i = 0; i < ARRAY_SIZE(test_cell_id_matching_tests); i++) {
+			const struct test_cell_id_matching_data *d = &test_cell_id_matching_tests[i];
+			struct gsm0808_cell_id_list2 add;
+
+			/* Ignore those with a different d->id */
+			if (!gsm0808_cell_ids_match(&d->id, id, true))
+				continue;
+
+			/* Ignore those with a different d->match_id discr */
+			if (d->match_id.id_discr != list_discr)
+				continue;
+
+			if (collect_matches != d->expect_match)
+				continue;
+
+			if (match_idx < 0 && d->expect_match) {
+				match_idx = list.id_list_len;
+			}
+
+			gsm0808_cell_id_to_list(&add, &d->match_id);
+			gsm0808_cell_id_list_add(&list, &add);
+		}
+	}
+
+	if (!list.id_list_len) {
+		printf("%s vs. %s: No match_id entries to test %s\n",
+		       gsm0808_cell_id_name(id),
+		       gsm0808_cell_id_discr_name(list_discr),
+		       test_match ? "MATCH" : "mismatch");
+		return true;
+	}
+
+	result = gsm0808_cell_id_matches_list(id, &list, 0, false);
+
+	printf("%s and %s: ",
+	       gsm0808_cell_id_name(id),
+	       gsm0808_cell_id_list_name(&list));
+	if (result >= 0)
+		printf("MATCH at [%d]\n", result);
+	else
+		printf("mismatch\n");
+
+	if (test_match
+	    && (result < 0 || result != match_idx)) {
+		printf("  ERROR: expected MATCH at %d\n", match_idx);
+		return false;
+	}
+
+	if (!test_match && result >= 0) {
+		printf("  ERROR: expected mismatch\n");
+		return false;
+	}
+
+	return true;
+}
+
+static void test_cell_id_list_matching(bool test_match)
+{
+	int i, j;
+	bool ok = true;
+
+	const enum CELL_IDENT discrs[] = {
+		CELL_IDENT_LAC, CELL_IDENT_CI, CELL_IDENT_LAC_AND_CI, CELL_IDENT_LAI_AND_LAC,
+		CELL_IDENT_WHOLE_GLOBAL,
+	};
+
+	printf("\n%s(%s)\n", __func__, test_match ? "test match" : "test mismatch");
+
+	/* Autogenerate Cell ID lists from above dataset, which should match / not match. */
+	for (i = 0; i < ARRAY_SIZE(discrs); i++) {
+		for (j = 0; j < ARRAY_SIZE(discrs); j++)
+			if (!test_cell_id_list_matching_discrs(test_match,
+							       discrs[i], discrs[j]))
+				ok = false;
+	}
+
+	OSMO_ASSERT(ok);
+}
+
 int main(int argc, char **argv)
 {
+	void *ctx = talloc_named_const(NULL, 0, "gsm0808 test");
+	msgb_talloc_ctx_init(ctx, 0);
+	osmo_init_logging2(ctx, NULL);
+
 	printf("Testing generation of GSM0808 messages\n");
+	test_gsm0808_enc_cause();
 	test_create_layer3();
 	test_create_layer3_aoip();
 	test_create_reset();
@@ -1456,9 +2223,11 @@ int main(int argc, char **argv)
 	test_create_cipher();
 	test_create_cipher_complete();
 	test_create_cipher_reject();
+	test_create_cipher_reject_ext();
 	test_create_cm_u();
 	test_create_sapi_reject();
 	test_create_ass();
+	test_create_ass2();
 	test_create_ass_compl();
 	test_create_ass_compl_aoip();
 	test_create_ass_fail();
@@ -1467,12 +2236,16 @@ int main(int argc, char **argv)
 	test_create_paging();
 	test_create_dtap();
 	test_prepend_dtap();
+
+	test_enc_dec_lcls();
+
 	test_enc_dec_aoip_trasp_addr_v4();
 	test_enc_dec_aoip_trasp_addr_v6();
 	test_gsm0808_enc_dec_speech_codec();
 	test_gsm0808_enc_dec_speech_codec_ext_with_cfg();
 	test_gsm0808_enc_dec_speech_codec_with_cfg();
 	test_gsm0808_enc_dec_speech_codec_list();
+	test_gsm0808_enc_dec_empty_speech_codec_list();
 	test_gsm0808_enc_dec_channel_type();
 	test_gsm0808_enc_dec_encrypt_info();
 
@@ -1494,6 +2267,13 @@ int main(int argc, char **argv)
 	test_gsm0808_enc_dec_cell_id_ci();
 	test_gsm0808_enc_dec_cell_id_lac_and_ci();
 	test_gsm0808_enc_dec_cell_id_global();
+
+	test_gsm0808_sc_cfg_from_gsm48_mr_cfg();
+	test_gsm48_mr_cfg_from_gsm0808_sc_cfg();
+
+	test_cell_id_matching();
+	test_cell_id_list_matching(true);
+	test_cell_id_list_matching(false);
 
 	printf("Done\n");
 	return EXIT_SUCCESS;

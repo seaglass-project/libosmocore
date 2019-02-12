@@ -89,6 +89,8 @@ gsm0480_create_unstructuredSS_Notify;
 gsm0480_create_ussd_resp;
 gsm0480_create_ussd_notify;
 gsm0480_create_ussd_release_complete;
+gsm0480_create_release_complete;
+
 gsm0480_extract_ie_by_tag;
 gsm0480_parse_facility_ie;
 gsm0480_decode_ussd_request;
@@ -97,6 +99,10 @@ gsm0480_wrap_facility;
 gsm0480_wrap_invoke;
 gsm0480_comp_type_names;
 gsm0480_op_code_names;
+gsm0480_msgb_alloc_name;
+gsm0480_gen_ussd_resp_7bit;
+gsm0480_gen_return_error;
+gsm0480_gen_reject;
 
 gsm0502_calc_paging_group;
 
@@ -144,16 +150,23 @@ gsm0808_att_tlvdef;
 gsm0808_bssap_name;
 gsm0808_bssmap_name;
 gsm0808_cause_name;
+gsm0808_cause_class_name;
 gsm0808_create_ass;
+gsm0808_create_ass2;
 gsm0808_create_assignment_completed;
 gsm0808_create_ass_compl;
+gsm0808_create_ass_compl2;
 gsm0808_create_assignment_failure;
 gsm0808_create_ass_fail;
 gsm0808_create_cipher;
 gsm0808_create_cipher_complete;
 gsm0808_create_cipher_reject;
+gsm0808_create_cipher_reject_ext;
+gsm0808_get_cipher_reject_cause;
+gsm0808_create_classmark_request;
 gsm0808_create_classmark_update;
 gsm0808_create_clear_command;
+gsm0808_create_clear_command2;
 gsm0808_create_clear_complete;
 gsm0808_create_clear_rqst;
 gsm0808_create_paging;
@@ -173,7 +186,9 @@ gsm0808_create_handover_request_ack;
 gsm0808_create_handover_detect;
 gsm0808_create_handover_complete;
 gsm0808_create_handover_failure;
+gsm0808_create_handover_performed;
 gsm0808_prepend_dtap_header;
+gsm0808_enc_cause;
 gsm0808_enc_aoip_trasp_addr;
 gsm0808_dec_aoip_trasp_addr;
 gsm0808_enc_speech_codec;
@@ -198,13 +213,40 @@ gsm0808_cell_id_list_name;
 gsm0808_cell_id_list_name_buf;
 gsm0808_cell_id_discr_names;
 gsm0808_cell_id_u_name;
+gsm0808_cell_ids_match;
+gsm0808_cell_id_matches_list;
 gsm0808_chan_type_to_speech_codec;
 gsm0808_speech_codec_from_chan_type;
+gsm0808_sc_cfg_from_gsm48_mr_cfg;
+gsm48_mr_cfg_from_gsm0808_sc_cfg;
 gsm0808_speech_codec_type_names;
+gsm0808_permitted_speech_names;
+gsm0808_chosen_enc_alg_names;
 gsm0808_channel_type_name;
 gsm0808_lcls_config_names;
 gsm0808_lcls_control_names;
 gsm0808_lcls_status_names;
+gsm0808_enc_lcls;
+gsm0808_dec_lcls;
+
+gsm29118_msgb_alloc;
+gsm29118_create_alert_req;
+gsm29118_create_dl_ud;
+gsm29118_create_eps_det_ack;
+gsm29118_create_imsi_det_ack;
+gsm29118_create_lu_ack;
+gsm29118_create_lu_rej;
+gsm29118_create_mm_info_req;
+gsm29118_create_paging_req;
+gsm29118_create_reset_ack;
+gsm29118_create_reset_ind;
+gsm29118_create_status;
+gsm29118_create_release_req;
+gsm29118_create_service_abort_req;
+
+osmo_enc_gcr;
+osmo_dec_gcr;
+osmo_gcr_eq;
 
 gsm0858_rsl_ul_meas_enc;
 
@@ -235,8 +277,17 @@ gsm411_rp_state_names;
 
 gsm414_msgt_names;
 
+gsm48_push_l3hdr;
 gsm48_att_tlvdef;
 gsm48_cc_msg_name;
+gsm48_rest_octets_si1;
+gsm48_rest_octets_si2quater;
+gsm48_rest_octets_si2ter;
+gsm48_rest_octets_si2bis;
+gsm48_rest_octets_si6;
+gsm48_rest_octets_si3;
+gsm48_rest_octets_si4;
+gsm48_rest_octets_si13;
 gsm48_rr_msg_name;
 gsm48_cc_state_name;
 gsm48_construct_ra;
@@ -289,6 +340,7 @@ gsm48_rr_att_tlvdef;
 gsm48_set_dtx;
 gsm48_dtx_mode;
 gsm48_mi_type_name;
+osmo_mi_name;
 gsm48_mcc_mnc_to_bcd;
 gsm48_mcc_mnc_from_bcd;
 gsm48_generate_lai2;
@@ -305,15 +357,22 @@ osmo_lai_name;
 osmo_rai_name;
 osmo_cgi_name;
 osmo_cgi_name2;
+osmo_gummei_name;
 osmo_mnc_from_str;
 osmo_mnc_cmp;
 osmo_plmn_cmp;
+osmo_gen_home_network_domain;
+osmo_parse_home_network_domain;
+osmo_gen_mme_domain;
+osmo_parse_mme_domain;
+osmo_gen_mme_group_domain;
 gsm48_chan_mode_names;
 gsm_chan_t_names;
 gsm48_pdisc_names;
 gsm48_rr_msgtype_names;
 gsm48_mm_msgtype_names;
 gsm48_cc_msgtype_names;
+gsm48_cc_cause_names;
 gsm48_pdisc_msgtype_name;
 gsm48_reject_value_names;
 
@@ -329,6 +388,7 @@ gsm_7bit_decode_n_hdr;
 gsm_7bit_encode_n;
 gsm_7bit_encode_n_ussd;
 
+gsm_arfcn2band_rc;
 gsm_arfcn2band;
 gsm_arfcn2freq10;
 gsm_freq102arfcn;
@@ -456,6 +516,8 @@ ipa_ccm_tlv_to_unitdata;
 ipa_ccm_idtag_name;
 ipa_ccm_idtag_parse;
 ipa_ccm_idtag_parse_off;
+ipa_ccm_id_get_parse;
+ipa_ccm_id_resp_parse;
 ipa_ccm_make_id_resp;
 ipa_ccm_make_id_resp_from_req;
 ipa_msg_alloc;
@@ -471,21 +533,62 @@ osmo_apn_qualify_from_imsi;
 osmo_apn_to_str;
 osmo_apn_from_str;
 
+osmo_gsm48_range_enc_determine_range;
+osmo_gsm48_range_enc_arfcns;
+osmo_gsm48_range_enc_find_index;
+osmo_gsm48_range_enc_filter_arfcns;
+osmo_gsm48_range_enc_128;
+osmo_gsm48_range_enc_256;
+osmo_gsm48_range_enc_512;
+osmo_gsm48_range_enc_1024;
+
 osmo_gsup_encode;
 osmo_gsup_decode;
 osmo_gsup_message_type_names;
 osmo_gsup_session_state_names;
 osmo_gsup_get_err_msg_type;
 
+osmo_gsup_sms_encode_sm_rp_da;
+osmo_gsup_sms_decode_sm_rp_da;
+osmo_gsup_sms_encode_sm_rp_oa;
+osmo_gsup_sms_decode_sm_rp_oa;
+
 osmo_oap_encode;
 osmo_oap_decode;
 
 osmo_imsi_str_valid;
 osmo_msisdn_str_valid;
+osmo_imei_str_valid;
 
 osmo_mncc_stringify;
 osmo_mncc_names;
 _osmo_mncc_log;
+
+osmo_oap_client_encoded;
+osmo_oap_client_handle;
+osmo_oap_client_init;
+osmo_oap_client_register;
+
+sgsap_msg_type_names;
+sgsap_iei_names;
+sgsap_eps_lu_type_names;
+sgsap_ismi_det_eps_type_names;
+sgsap_ismi_det_noneps_type_names;
+sgsap_service_ind_names;
+sgsap_sgs_cause_names;
+sgsap_ue_emm_mode_names;
+sgsap_ie_tlvdef;
+
+osmo_rat_type_names;
+osmo_lu_type_names;
+osmo_cm_service_type_names;
+
+osmo_classmark_is_r99;
+osmo_classmark1_is_r99;
+osmo_classmark2_is_r99;
+osmo_classmark_supports_a5;
+osmo_classmark_a5_name;
+osmo_classmark_update;
 
 local: *;
 };

@@ -67,6 +67,22 @@ const struct value_string osmo_gsup_message_type_names[] = {
 	OSMO_VALUE_STRING(OSMO_GSUP_MSGT_PROC_SS_ERROR),
 	OSMO_VALUE_STRING(OSMO_GSUP_MSGT_PROC_SS_RESULT),
 
+	OSMO_VALUE_STRING(OSMO_GSUP_MSGT_MO_FORWARD_SM_REQUEST),
+	OSMO_VALUE_STRING(OSMO_GSUP_MSGT_MO_FORWARD_SM_ERROR),
+	OSMO_VALUE_STRING(OSMO_GSUP_MSGT_MO_FORWARD_SM_RESULT),
+
+	OSMO_VALUE_STRING(OSMO_GSUP_MSGT_MT_FORWARD_SM_REQUEST),
+	OSMO_VALUE_STRING(OSMO_GSUP_MSGT_MT_FORWARD_SM_ERROR),
+	OSMO_VALUE_STRING(OSMO_GSUP_MSGT_MT_FORWARD_SM_RESULT),
+
+	OSMO_VALUE_STRING(OSMO_GSUP_MSGT_READY_FOR_SM_REQUEST),
+	OSMO_VALUE_STRING(OSMO_GSUP_MSGT_READY_FOR_SM_ERROR),
+	OSMO_VALUE_STRING(OSMO_GSUP_MSGT_READY_FOR_SM_RESULT),
+
+	OSMO_VALUE_STRING(OSMO_GSUP_MSGT_CHECK_IMEI_REQUEST),
+	OSMO_VALUE_STRING(OSMO_GSUP_MSGT_CHECK_IMEI_ERROR),
+	OSMO_VALUE_STRING(OSMO_GSUP_MSGT_CHECK_IMEI_RESULT),
+
 	{ 0, NULL }
 };
 
@@ -79,26 +95,11 @@ const struct value_string osmo_gsup_session_state_names[] = {
 };
 
 
-/*! return the error message type corresponding to \a type_in
- *  \returns matching error message type; -1 on error */
+/*! return the error message type corresponding to \a type_in.
+ *  Deprecated, use OSMO_GSUP_TO_MSGT_ERROR() instead. */
 int osmo_gsup_get_err_msg_type(enum osmo_gsup_message_type type_in)
 {
-	switch (type_in) {
-	case OSMO_GSUP_MSGT_UPDATE_LOCATION_REQUEST:
-		return OSMO_GSUP_MSGT_UPDATE_LOCATION_ERROR;
-	case OSMO_GSUP_MSGT_SEND_AUTH_INFO_REQUEST:
-		return OSMO_GSUP_MSGT_SEND_AUTH_INFO_ERROR;
-	case OSMO_GSUP_MSGT_PURGE_MS_REQUEST:
-		return OSMO_GSUP_MSGT_PURGE_MS_ERROR;
-	case OSMO_GSUP_MSGT_INSERT_DATA_REQUEST:
-		return OSMO_GSUP_MSGT_INSERT_DATA_ERROR;
-	case OSMO_GSUP_MSGT_DELETE_DATA_REQUEST:
-		return OSMO_GSUP_MSGT_DELETE_DATA_ERROR;
-	case OSMO_GSUP_MSGT_LOCATION_CANCEL_REQUEST:
-		return OSMO_GSUP_MSGT_LOCATION_CANCEL_ERROR;
-	default:
-		return -1;
-	}
+	return OSMO_GSUP_TO_MSGT_ERROR(type_in);
 }
 
 static int decode_pdp_info(uint8_t *data, size_t data_len,
@@ -434,6 +435,48 @@ int osmo_gsup_decode(const uint8_t *const_data, size_t data_len,
 			gsup_msg->ss_info_len = value_len;
 			break;
 
+		case OSMO_GSUP_SM_RP_MR_IE:
+			gsup_msg->sm_rp_mr = value;
+			break;
+
+		case OSMO_GSUP_SM_RP_DA_IE:
+			rc = osmo_gsup_sms_decode_sm_rp_da(gsup_msg, value, value_len);
+			if (rc)
+				return rc;
+			break;
+
+		case OSMO_GSUP_SM_RP_OA_IE:
+			rc = osmo_gsup_sms_decode_sm_rp_oa(gsup_msg, value, value_len);
+			if (rc)
+				return rc;
+			break;
+
+		case OSMO_GSUP_SM_RP_UI_IE:
+			gsup_msg->sm_rp_ui = value;
+			gsup_msg->sm_rp_ui_len = value_len;
+			break;
+
+		case OSMO_GSUP_SM_RP_MMS_IE:
+			gsup_msg->sm_rp_mms = value;
+			break;
+
+		case OSMO_GSUP_SM_RP_CAUSE_IE:
+			gsup_msg->sm_rp_cause = value;
+			break;
+
+		case OSMO_GSUP_SM_ALERT_RSN_IE:
+			gsup_msg->sm_alert_rsn = *value;
+			break;
+
+		case OSMO_GSUP_IMEI_IE:
+			gsup_msg->imei_enc = value;
+			gsup_msg->imei_enc_len = value_len;
+			break;
+
+		case OSMO_GSUP_IMEI_RESULT_IE:
+			gsup_msg->imei_result = osmo_decode_big_endian(value, value_len) + 1;
+			break;
+
 		default:
 			LOGP(DLGSUP, LOGL_NOTICE,
 			     "GSUP IE type %d unknown\n", iei);
@@ -529,13 +572,13 @@ static void encode_auth_info(struct msgb *msg, enum osmo_gsup_iei iei,
 int osmo_gsup_encode(struct msgb *msg, const struct osmo_gsup_message *gsup_msg)
 {
 	uint8_t u8;
-	int idx;
+	int idx, rc;
 	uint8_t bcd_buf[GSM48_MI_SIZE] = {0};
 	size_t bcd_len;
 
 	/* generic part */
 	if(!gsup_msg->message_type)
-		return -ENOMEM;
+		return -EINVAL;
 
 	msgb_v_put(msg, gsup_msg->message_type);
 
@@ -624,6 +667,55 @@ int osmo_gsup_encode(struct msgb *msg, const struct osmo_gsup_message *gsup_msg)
 	if (gsup_msg->ss_info) {
 		msgb_tlv_put(msg, OSMO_GSUP_SS_INFO_IE,
 				gsup_msg->ss_info_len, gsup_msg->ss_info);
+	}
+
+	if (gsup_msg->sm_rp_mr) {
+		msgb_tlv_put(msg, OSMO_GSUP_SM_RP_MR_IE,
+				sizeof(*gsup_msg->sm_rp_mr), gsup_msg->sm_rp_mr);
+	}
+
+	if (gsup_msg->sm_rp_da_type) {
+		rc = osmo_gsup_sms_encode_sm_rp_da(msg, gsup_msg);
+		if (rc) {
+			LOGP(DLGSUP, LOGL_ERROR, "Failed to encode SM-RP-DA IE\n");
+			return -EINVAL;
+		}
+	}
+
+	if (gsup_msg->sm_rp_oa_type) {
+		rc = osmo_gsup_sms_encode_sm_rp_oa(msg, gsup_msg);
+		if (rc) {
+			LOGP(DLGSUP, LOGL_ERROR, "Failed to encode SM-RP-OA IE\n");
+			return -EINVAL;
+		}
+	}
+
+	if (gsup_msg->sm_rp_ui) {
+		msgb_tlv_put(msg, OSMO_GSUP_SM_RP_UI_IE,
+				gsup_msg->sm_rp_ui_len, gsup_msg->sm_rp_ui);
+	}
+
+	if (gsup_msg->sm_rp_mms) {
+		msgb_tlv_put(msg, OSMO_GSUP_SM_RP_MMS_IE,
+				sizeof(*gsup_msg->sm_rp_mms), gsup_msg->sm_rp_mms);
+	}
+
+	if (gsup_msg->sm_rp_cause) {
+		msgb_tlv_put(msg, OSMO_GSUP_SM_RP_CAUSE_IE,
+				sizeof(*gsup_msg->sm_rp_cause), gsup_msg->sm_rp_cause);
+	}
+
+	if ((u8 = gsup_msg->sm_alert_rsn)) {
+		msgb_tlv_put(msg, OSMO_GSUP_SM_ALERT_RSN_IE,
+				sizeof(u8), &u8);
+	}
+
+	if (gsup_msg->imei_enc)
+		msgb_tlv_put(msg, OSMO_GSUP_IMEI_IE, gsup_msg->imei_enc_len, gsup_msg->imei_enc);
+
+	if ((u8 = gsup_msg->imei_result)) {
+		u8 -= 1;
+		msgb_tlv_put(msg, OSMO_GSUP_IMEI_RESULT_IE, sizeof(u8), &u8);
 	}
 
 	return 0;

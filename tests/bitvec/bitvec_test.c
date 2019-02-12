@@ -181,6 +181,47 @@ static void test_array()
 	test_array_item(17, &b, n, array, n * 3);
 }
 
+static void test_used_bytes()
+{
+	struct bitvec b;
+	uint8_t d[32];
+	unsigned int i;
+
+	b.data = d;
+	b.data_len = sizeof(d);
+	bitvec_zero(&b);
+
+	OSMO_ASSERT(bitvec_used_bytes(&b) == 0);
+
+	for (i = 0; i < 8; i++) {
+		bitvec_set_bit(&b, 1);
+		OSMO_ASSERT(bitvec_used_bytes(&b) == 1);
+	}
+
+	for (i = 8; i < 16; i++) {
+		bitvec_set_bit(&b, 1);
+		OSMO_ASSERT(bitvec_used_bytes(&b) == 2);
+	}
+}
+
+static void test_tailroom()
+{
+	struct bitvec b;
+	uint8_t d[32];
+	unsigned int i;
+
+	b.data = d;
+	b.data_len = sizeof(d);
+	bitvec_zero(&b);
+
+	OSMO_ASSERT(bitvec_tailroom_bits(&b) == sizeof(d)*8);
+
+	for (i = 0; i < 8*sizeof(d); i++) {
+		bitvec_set_bit(&b, 1);
+		OSMO_ASSERT(bitvec_tailroom_bits(&b) == sizeof(d)*8-(i+1));
+	}
+}
+
 int main(int argc, char **argv)
 {
 	struct bitvec bv;
@@ -285,6 +326,10 @@ int main(int argc, char **argv)
 
 	bitvec_zero(&bv);
 	test_bitvec_rl_curbit(&bv, 1, 64, 0);
+
+	printf("\nbitvec bytes used.\n");
+	test_used_bytes();
+	test_tailroom();
 
 	printf("\nbitvec ok.\n");
 	return 0;

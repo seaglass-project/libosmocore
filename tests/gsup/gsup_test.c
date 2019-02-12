@@ -217,6 +217,99 @@ static void test_gsup_messages_dec_enc(void)
 				0x02, 0x01, 0x47,
 	};
 
+	static const uint8_t send_mo_forward_sm_req[] = {
+		0x24, /* OSMO_GSUP_MSGT_MO_FORWARD_SM_REQUEST */
+		TEST_IMSI_IE,
+
+		/* SM related IEs */
+		0x40, 0x01, /* SM-RP-MR (Message Reference) */
+			0xfa,
+		0x41, 0x08, /* SM-RP-DA (Destination Address) */
+			0x03, /* SMSC address */
+				0x91, 0x52, 0x75, 0x47, 0x99, 0x09, 0x82,
+		0x42, 0x01, /* SM-RP-OA (Originating Address) */
+			0xff, /* Special case: noSM-RP-OA */
+		0x43, 0x04, /* SM-RP-UI (TPDU) */
+			0xde, 0xad, 0xbe, 0xef,
+	};
+
+	static const uint8_t send_mt_forward_sm_req[] = {
+		0x28, /* OSMO_GSUP_MSGT_MT_FORWARD_SM_REQUEST */
+		TEST_IMSI_IE,
+
+		/* SM related IEs */
+		0x40, 0x01, /* SM-RP-MR (Message Reference) */
+			0xfa,
+		0x41, 0x09, /* SM-RP-DA (Destination Address) */
+			0x01, /* IMSI */
+				0x21, 0x43, 0x65, 0x87, 0x09, 0x21, 0x43, 0xf5,
+		0x42, 0x08, /* SM-RP-OA (Originating Address) */
+			0x03, /* SMSC address */
+				0x91, 0x52, 0x75, 0x47, 0x99, 0x09, 0x82,
+		0x43, 0x04, /* SM-RP-UI (TPDU) */
+			0xde, 0xad, 0xbe, 0xef,
+		0x45, 0x01, /* SM-RP-MMS (More Messages to Send) */
+			0x01,
+	};
+
+	static const uint8_t send_mo_mt_forward_sm_err[] = {
+		0x25, /* OSMO_GSUP_MSGT_MO_FORWARD_SM_ERROR */
+		TEST_IMSI_IE,
+
+		/* SM related IEs */
+		0x40, 0x01, /* SM-RP-MR (Message Reference) */
+			0xfa,
+		0x44, 0x01, /* SM-RP-Cause value */
+			0xaf,
+	};
+
+	static const uint8_t send_mo_mt_forward_sm_rsp[] = {
+		0x2a, /* OSMO_GSUP_MSGT_MT_FORWARD_SM_RESULT */
+		TEST_IMSI_IE,
+
+		/* SM related IEs */
+		0x40, 0x01, /* SM-RP-MR (Message Reference) */
+			0xfa,
+		0x43, 0x04, /* SM-RP-UI (TPDU) */
+			0xde, 0xad, 0xbe, 0xef,
+	};
+
+	static const uint8_t send_ready_for_sm_ind[] = {
+		0x2c, /* OSMO_GSUP_MSGT_READY_FOR_SM_REQUEST */
+		TEST_IMSI_IE,
+
+		/* SM related IEs */
+		0x46, 0x01, /* Alert reason */
+			0x02, /* Memory Available (SMMA) */
+	};
+
+	static const uint8_t send_check_imei_req[] = {
+		0x30, /* OSMO_GSUP_MSGT_CHECK_IMEI_REQUEST */
+		TEST_IMSI_IE,
+
+		/* imei */
+		0x50, 0x09,
+			0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42, 0x42,
+	};
+
+	static const uint8_t send_check_imei_err[] = {
+		0x31, /* OSMO_GSUP_MSGT_CHECK_IMEI_ERROR */
+		TEST_IMSI_IE,
+
+		/* cause */
+		0x02, 0x01,
+			0x60, /* GMM_CAUSE_INV_MAND_INFO */
+	};
+
+	static const uint8_t send_check_imei_res[] = {
+		0x32, /* OSMO_GSUP_MSGT_CHECK_IMEI_RESULT */
+		TEST_IMSI_IE,
+
+		/* imei_result */
+		0x51, 0x01,
+			0x00, /* OSMO_GSUP_IMEI_RESULT_ACK */
+	};
+
 	static const struct test {
 		char *name;
 		const uint8_t *data;
@@ -256,6 +349,22 @@ static void test_gsup_messages_dec_enc(void)
 			send_ussd_req, sizeof(send_ussd_req)},
 		{"SS/USSD processUnstructuredSS-Request / ReturnResult",
 			send_ussd_res, sizeof(send_ussd_res)},
+		{"MO-ForwardSM (MSC -> SMSC) Request",
+			send_mo_forward_sm_req, sizeof(send_mo_forward_sm_req)},
+		{"MT-ForwardSM (MSC -> SMSC) Request",
+			send_mt_forward_sm_req, sizeof(send_mt_forward_sm_req)},
+		{"MO-/MT-ForwardSM Response",
+			send_mo_mt_forward_sm_rsp, sizeof(send_mo_mt_forward_sm_rsp)},
+		{"MO-/MT-ForwardSM Error",
+			send_mo_mt_forward_sm_err, sizeof(send_mo_mt_forward_sm_err)},
+		{"ReadyForSM (MSC -> SMSC) Indication",
+			send_ready_for_sm_ind, sizeof(send_ready_for_sm_ind)},
+		{"Check IMEI Request",
+			send_check_imei_req, sizeof(send_check_imei_req)},
+		{"Check IMEI Error",
+			send_check_imei_err, sizeof(send_check_imei_err)},
+		{"Check IMEI Result",
+			send_check_imei_res, sizeof(send_check_imei_res)},
 	};
 
 	printf("Test GSUP message decoding/encoding\n");
@@ -319,11 +428,7 @@ static void test_gsup_messages_dec_enc(void)
 					osmo_hexdump(t->data + j, ie_end - j));
 
 				OSMO_ASSERT(j <= ie_end - 2);
-				/**
-				 * FIXME: share the maximal IE value somehow
-				 * in order to avoid manual updating of this
-				 */
-				OSMO_ASSERT(t->data[j+0] <= OSMO_GSUP_SS_INFO_IE);
+				OSMO_ASSERT(t->data[j+0] < _OSMO_GSUP_IEI_END_MARKER);
 				OSMO_ASSERT(t->data[j+1] <= ie_end - j - 2);
 
 				ie_end = j;

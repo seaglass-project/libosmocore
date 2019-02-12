@@ -15,7 +15,8 @@ build() {
 
     prep_build "$src_dir" "$build_dir"
 
-    "$src_dir"/configure  --disable-silent-rules --enable-static $ENABLE_SANITIZE --enable-werror
+    "$src_dir"/configure  --disable-silent-rules --enable-static $ENABLE_SANITIZE --enable-werror \
+        --enable-external-tests
 
     run_make
 }
@@ -27,7 +28,8 @@ build .
 
 # do distcheck only once, which is fine from built source tree, since distcheck
 # is well separated from the source tree state.
-$MAKE distcheck \
+DISTCHECK_CONFIGURE_FLAGS=--enable-external-tests \
+    $MAKE distcheck \
     || cat-testlogs.sh
 
 osmo-clean-workspace.sh

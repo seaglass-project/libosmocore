@@ -31,6 +31,7 @@
 
 #include <osmocom/gsm/gsm23003.h>
 #include <osmocom/gsm/protocol/gsm_23_003.h>
+#include <osmocom/core/utils.h>
 
 static bool is_n_digits(const char *str, int min_digits, int max_digits)
 {
@@ -69,6 +70,23 @@ bool osmo_imsi_str_valid(const char *imsi)
 bool osmo_msisdn_str_valid(const char *msisdn)
 {
 	return is_n_digits(msisdn, 1, 15);
+}
+
+/*! Determine whether the given IMEI is valid according to 3GPP TS 23.003,
+ * Section 6.2.1. It consists of 14 digits, the 15th check digit is not
+ * intended for digital transmission.
+ * \param imei  IMEI digits in ASCII string representation.
+ * \param with_15th_digit  when true, expect the 15th digit to be present and
+ *        verify it.
+ * \returns true when the IMEI is valid, false for invalid characters or number
+ *          of digits.
+ */
+bool osmo_imei_str_valid(const char *imei, bool with_15th_digit)
+{
+	if (with_15th_digit)
+		return is_n_digits(imei, 15, 15) && osmo_luhn(imei, 14) == imei[14];
+	else
+		return is_n_digits(imei, 14, 14);
 }
 
 /*! Return MCC string as standardized 3-digit with leading zeros.
@@ -167,6 +185,14 @@ static void to_bcd(uint8_t *bcd, uint16_t val)
 	bcd[1] = val % 10;
 	val = val / 10;
 	bcd[0] = val % 10;
+}
+
+const char *osmo_gummei_name(const struct osmo_gummei *gummei)
+{
+	static char buf[32];
+	snprintf(buf, sizeof(buf), "%s-%04x-%02x", osmo_plmn_name(&gummei->plmn),
+		 gummei->mme.group_id, gummei->mme.code);
+	return buf;
 }
 
 /* Convert MCC + MNC to BCD representation
@@ -296,4 +322,116 @@ int osmo_plmn_cmp(const struct osmo_plmn_id *a, const struct osmo_plmn_id *b)
 	if (a->mcc > b->mcc)
 		return 1;
 	return osmo_mnc_cmp(a->mnc, a->mnc_3_digits, b->mnc, b->mnc_3_digits);
+}
+
+/* Compare two LAI.
+ * The order of comparison is MCC, MNC, LAC. See also osmo_plmn_cmp().
+ * \param a[in]  "Left" side LAI.
+ * \param b[in]  "Right" side LAI.
+ * \returns 0 if the LAI are equal, -1 if a < b, 1 if a > b. */
+int osmo_lai_cmp(const struct osmo_location_area_id *a, const struct osmo_location_area_id *b)
+{
+	int rc = osmo_plmn_cmp(&a->plmn, &b->plmn);
+	if (rc)
+		return rc;
+	if (a->lac < b->lac)
+		return -1;
+	if (a->lac > b->lac)
+		return 1;
+	return 0;
+}
+
+/* Compare two CGI.
+ * The order of comparison is MCC, MNC, LAC, CI. See also osmo_lai_cmp().
+ * \param a[in]  "Left" side CGI.
+ * \param b[in]  "Right" side CGI.
+ * \returns 0 if the CGI are equal, -1 if a < b, 1 if a > b. */
+int osmo_cgi_cmp(const struct osmo_cell_global_id *a, const struct osmo_cell_global_id *b)
+{
+	int rc = osmo_lai_cmp(&a->lai, &b->lai);
+	if (rc)
+		return rc;
+	if (a->cell_identity < b->cell_identity)
+		return -1;
+	if (a->cell_identity > b->cell_identity)
+		return 1;
+	return 0;
+}
+
+/*! Generate TS 23.003 Section 19.2 Home Network Realm/Domain (text form)
+ *  \param out[out] caller-provided output buffer, at least 33 bytes long
+ *  \param plmn[in] Osmocom representation of PLMN ID (MCC + MNC)
+ *  \returns number of characters printed (excluding NUL); negative on error */
+int osmo_gen_home_network_domain(char *out, const struct osmo_plmn_id *plmn)
+{
+	if (plmn->mcc > 999)
+		return -EINVAL;
+	if (plmn->mnc > 999)
+		return -EINVAL;
+	return sprintf(out, "epc.mnc%03u.mcc%03u.3gppnetwork.org", plmn->mnc, plmn->mcc);
+}
+
+/*! Parse a TS 23.003 Section 19.2 Home Network Realm/Domain (text form) into a \ref osmo_plmn_id
+ *  \param out[out] caller-allocated output structure
+ *  \param in[in] character string representation to be parsed
+ *  \returns 0 on success; negative on error */
+int osmo_parse_home_network_domain(struct osmo_plmn_id *out, const char *in)
+{
+	int rc;
+
+	memset(out, 0, sizeof(*out));
+	rc = sscanf(in, "epc.mnc%03hu.mcc%03hu.3gppnetwork.org", &out->mnc, &out->mcc);
+	if (rc < 0)
+		return rc;
+	if (rc != 2)
+		return -EINVAL;
+	return 0;
+}
+
+/*! Generate TS 23.003 Section 19.4.2.4 MME Domain (text form)
+ *  \param out[out] caller-provided output buffer, at least 56 bytes long
+ *  \param gummei[in] Structure representing the Globally Unique MME Identifier
+ *  \returns number of characters printed (excluding NUL); negative on error */
+int osmo_gen_mme_domain(char *out, const struct osmo_gummei *gummei)
+{
+	char domain[GSM23003_HOME_NETWORK_DOMAIN_LEN+1];
+	int rc;
+	rc = osmo_gen_home_network_domain(domain, &gummei->plmn);
+	if (rc < 0)
+		return rc;
+	return sprintf(out, "mmec%02x.mmegi%04x.mme.%s", gummei->mme.code, gummei->mme.group_id, domain);
+}
+
+/*! Parse a TS 23.003 Section 19.4.2.4 MME Domain (text form) into a \ref osmo_gummei
+ *  \param out[out] caller-allocated output GUMMEI structure
+ *  \param in[in] character string representation to be parsed
+ *  \returns 0 on success; negative on error */
+int osmo_parse_mme_domain(struct osmo_gummei *out, const char *in)
+{
+	int rc;
+
+	memset(out, 0, sizeof(*out));
+	rc = sscanf(in, "mmec%02hhx.mmegi%04hx.mme.epc.mnc%03hu.mcc%03hu.3gppnetwork.org",
+		    &out->mme.code, &out->mme.group_id,
+		    &out->plmn.mnc, &out->plmn.mcc);
+	if (rc < 0)
+		return rc;
+	if (rc != 4)
+		return -EINVAL;
+	return 0;
+}
+
+/*! Generate TS 23.003 Section 19.4.2.4 MME Group Domain (text form)
+ *  \param out[out] caller-provided output buffer, at least 56 bytes long
+ *  \param mmegi[in] MME Group Identifier
+ *  \param plmn[in] Osmocom representation of PLMN ID (MCC + MNC)
+ *  \returns number of characters printed (excluding NUL); negative on error */
+int osmo_gen_mme_group_domain(char *out, uint16_t mmegi, const struct osmo_plmn_id *plmn)
+{
+	char domain[GSM23003_HOME_NETWORK_DOMAIN_LEN+1];
+	int rc;
+	rc = osmo_gen_home_network_domain(domain, plmn);
+	if (rc < 0)
+		return rc;
+	return sprintf(out, "mmegi%04x.mme.%s", mmegi, domain);
 }

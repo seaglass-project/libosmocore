@@ -21,17 +21,23 @@
  */
 
 #include <osmocom/gsm/ipa.h>
+#include <osmocom/gsm/protocol/ipaccess.h>
 
 #include <osmocom/core/logging.h>
 #include <osmocom/core/utils.h>
+#include <osmocom/core/socket.h>
 
 #include <stdio.h>
 #include <ctype.h>
 #include <time.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <errno.h>
 
 static void hexdump_test(void)
 {
 	uint8_t data[4098];
+	char buf[256];
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(data); ++i)
@@ -39,10 +45,34 @@ static void hexdump_test(void)
 
 	printf("Plain dump\n");
 	printf("%s\n", osmo_hexdump(data, 4));
+	printf("%s\n", osmo_hexdump_nospc(data, 4));
 
 	printf("Corner case\n");
 	printf("%s\n", osmo_hexdump(data, ARRAY_SIZE(data)));
 	printf("%s\n", osmo_hexdump_nospc(data, ARRAY_SIZE(data)));
+
+#define _HEXDUMP_BUF_TEST(SIZE, DELIM, DELIM_AFTER) \
+	buf[0] = '!'; \
+	buf[1] = '\0'; \
+	printf("osmo_hexdump_buf(buf, " #SIZE ", data, 4, %s, " #DELIM_AFTER ")\n = \"%s\"\n", \
+	       DELIM ? #DELIM : "NULL", \
+	       osmo_hexdump_buf(buf, SIZE, data, 4, DELIM, DELIM_AFTER))
+#define HEXDUMP_BUF_TEST(DELIM) \
+	_HEXDUMP_BUF_TEST(sizeof(buf), DELIM, false); \
+	_HEXDUMP_BUF_TEST(sizeof(buf), DELIM, true); \
+	_HEXDUMP_BUF_TEST(6, DELIM, false); \
+	_HEXDUMP_BUF_TEST(7, DELIM, false); \
+	_HEXDUMP_BUF_TEST(8, DELIM, false); \
+	_HEXDUMP_BUF_TEST(6, DELIM, true); \
+	_HEXDUMP_BUF_TEST(7, DELIM, true); \
+	_HEXDUMP_BUF_TEST(8, DELIM, true)
+
+	HEXDUMP_BUF_TEST("[delim]");
+	HEXDUMP_BUF_TEST(" ");
+	HEXDUMP_BUF_TEST(":");
+	HEXDUMP_BUF_TEST("::");
+	HEXDUMP_BUF_TEST("");
+	HEXDUMP_BUF_TEST(NULL);
 }
 
 static void hexparse_test(void)
@@ -167,12 +197,65 @@ static void hexparse_test(void)
 	printf("rc = %d\n", rc);
 }
 
-static void test_idtag_parsing(void)
+static void test_ipa_ccm_id_resp_parsing(void)
 {
 	struct tlv_parsed tvp;
 	int rc;
 
-        static uint8_t data[] = {
+	static const uint8_t id_resp_data[] = {
+		0x00, 0x13,	IPAC_IDTAG_MACADDR,
+			'0','0',':','0','2',':','9','5',':','0','0',':','6','2',':','9','e','\0',
+		0x00, 0x11,	IPAC_IDTAG_IPADDR,
+			'1','9','2','.','1','6','8','.','1','0','0','.','1','9','0','\0',
+		0x00, 0x0a,	IPAC_IDTAG_UNIT,
+			'1','2','3','4','/','0','/','0','\0',
+		0x00, 0x02,	IPAC_IDTAG_LOCATION1,
+			'\0',
+		0x00, 0x0d,	IPAC_IDTAG_LOCATION2,
+			'B','T','S','_','N','B','T','1','3','1','G','\0',
+		0x00, 0x0c,	IPAC_IDTAG_EQUIPVERS,
+			'1','6','5','a','0','2','9','_','5','5','\0',
+		0x00, 0x14,	IPAC_IDTAG_SWVERSION,
+			'1','6','8','d','4','7','2','_','v','2','0','0','b','4','1','1','d','0','\0',
+		0x00, 0x18,	IPAC_IDTAG_UNITNAME,
+			'n','b','t','s','-','0','0','-','0','2','-','9','5','-','0','0','-','6','2','-','9','E','\0',
+		0x00, 0x0a,	IPAC_IDTAG_SERNR,
+			'0','0','1','1','0','7','8','1','\0'
+	};
+
+	printf("\nTesting IPA CCM ID RESP parsing\n");
+
+	rc = ipa_ccm_id_resp_parse(&tvp, (uint8_t *) id_resp_data, sizeof(id_resp_data));
+	OSMO_ASSERT(rc == 0);
+
+	OSMO_ASSERT(TLVP_PRESENT(&tvp, IPAC_IDTAG_MACADDR));
+	OSMO_ASSERT(TLVP_LEN(&tvp, IPAC_IDTAG_MACADDR) == 0x12);
+	OSMO_ASSERT(TLVP_PRESENT(&tvp, IPAC_IDTAG_IPADDR));
+	OSMO_ASSERT(TLVP_LEN(&tvp, IPAC_IDTAG_IPADDR) == 0x10);
+	OSMO_ASSERT(TLVP_PRESENT(&tvp, IPAC_IDTAG_UNIT));
+	OSMO_ASSERT(TLVP_LEN(&tvp, IPAC_IDTAG_UNIT) == 0x09);
+	OSMO_ASSERT(TLVP_PRESENT(&tvp, IPAC_IDTAG_LOCATION1));
+	OSMO_ASSERT(TLVP_LEN(&tvp, IPAC_IDTAG_LOCATION1) == 0x01);
+	OSMO_ASSERT(TLVP_PRESENT(&tvp, IPAC_IDTAG_LOCATION2));
+	OSMO_ASSERT(TLVP_LEN(&tvp, IPAC_IDTAG_LOCATION2) == 0x0c);
+	OSMO_ASSERT(TLVP_PRESENT(&tvp, IPAC_IDTAG_EQUIPVERS));
+	OSMO_ASSERT(TLVP_LEN(&tvp, IPAC_IDTAG_EQUIPVERS) == 0x0b);
+	OSMO_ASSERT(TLVP_PRESENT(&tvp, IPAC_IDTAG_SWVERSION));
+	OSMO_ASSERT(TLVP_LEN(&tvp, IPAC_IDTAG_EQUIPVERS) == 0x0b);
+	OSMO_ASSERT(TLVP_LEN(&tvp, IPAC_IDTAG_SWVERSION) == 0x13);
+	OSMO_ASSERT(TLVP_PRESENT(&tvp, IPAC_IDTAG_UNITNAME));
+	OSMO_ASSERT(TLVP_LEN(&tvp, IPAC_IDTAG_UNITNAME) == 0x17);
+	OSMO_ASSERT(TLVP_PRESENT(&tvp, IPAC_IDTAG_SERNR));
+	OSMO_ASSERT(TLVP_LEN(&tvp, IPAC_IDTAG_SERNR) == 0x09);
+}
+
+static void test_ipa_ccm_id_get_parsing(void)
+{
+	struct tlv_parsed tvp;
+	int rc;
+
+	/* IPA CCM IDENTITY REQUEST message: 8bit length followed by respective value */
+        static const uint8_t id_get_data[] = {
 		0x01, 0x08,
 		0x01, 0x07,
 		0x01, 0x02,
@@ -185,7 +268,9 @@ static void test_idtag_parsing(void)
 		0x11, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
         };
 
-	rc = ipa_ccm_idtag_parse_off(&tvp, data, sizeof(data), 1);
+	printf("\nTesting IPA CCM ID GET parsing\n");
+
+	rc = ipa_ccm_id_get_parse(&tvp, id_get_data, sizeof(id_get_data));
 	OSMO_ASSERT(rc == 0);
 
 	OSMO_ASSERT(TLVP_PRESENT(&tvp, 8));
@@ -324,6 +409,118 @@ static void bcd_test(void)
 	}
 }
 
+struct bcd2str_test {
+	const char *bcd_hex;
+	int start_nibble;
+	int end_nibble;
+	bool allow_hex;
+	size_t str_size;
+	const char *expect_str;
+	int expect_rc;
+};
+
+static const struct bcd2str_test bcd2str_tests[] = {
+	{
+		.bcd_hex = "1a 32 54 76 98 f0",
+		.start_nibble = 1,
+		.end_nibble = 11,
+		.expect_str = "1234567890",
+		.expect_rc = 10,
+	},
+	{
+		.bcd_hex = "1a 32 a4 cb 9d f0",
+		.start_nibble = 1,
+		.end_nibble = 11,
+		.expect_str = "1234ABCD90",
+		.expect_rc = -EINVAL,
+	},
+	{
+		.bcd_hex = "1a 32 a4 cb 9d f0",
+		.start_nibble = 1,
+		.end_nibble = 11,
+		.allow_hex = true,
+		.expect_str = "1234ABCD90",
+		.expect_rc = 10,
+	},
+	{
+		.bcd_hex = "1a 32 54 76 98 f0",
+		.start_nibble = 1,
+		.end_nibble = 12,
+		.expect_str = "1234567890F",
+		.expect_rc = -EINVAL,
+	},
+	{
+		.bcd_hex = "1a 32 54 76 98 f0",
+		.start_nibble = 1,
+		.end_nibble = 12,
+		.allow_hex = true,
+		.expect_str = "1234567890F",
+		.expect_rc = 11,
+	},
+	{
+		.bcd_hex = "1a 32 54 76 98 f0",
+		.start_nibble = 0,
+		.end_nibble = 12,
+		.allow_hex = true,
+		.expect_str = "A1234567890F",
+		.expect_rc = 12,
+	},
+	{
+		.bcd_hex = "1a 32 54 76 98 f0",
+		.start_nibble = 1,
+		.end_nibble = 12,
+		.str_size = 5,
+		.expect_str = "1234",
+		.expect_rc = 11,
+	},
+	{
+		.bcd_hex = "",
+		.start_nibble = 1,
+		.end_nibble = 1,
+		.expect_str = "",
+		.expect_rc = 0,
+	},
+};
+
+static void bcd2str_test(void)
+{
+	int i;
+	uint8_t bcd[64];
+	int rc;
+
+	printf("\nTesting bcd to string conversion\n");
+
+	for (i = 0; i < ARRAY_SIZE(bcd2str_tests); i++) {
+		const struct bcd2str_test *t = &bcd2str_tests[i];
+		char str[64] = {};
+		size_t str_size = t->str_size ? : sizeof(str);
+
+		osmo_hexparse(t->bcd_hex, bcd, sizeof(bcd));
+
+		printf("- BCD-input='%s' nibbles=[%d..%d[ str_size=%zu\n", t->bcd_hex,
+		       t->start_nibble, t->end_nibble, str_size);
+		rc = osmo_bcd2str(str, str_size, bcd, t->start_nibble, t->end_nibble, t->allow_hex);
+
+		printf("  rc=%d\n", rc);
+
+		OSMO_ASSERT(str[str_size-1] == '\0');
+		printf("  -> %s\n", osmo_quote_str(str, -1));
+
+		if (rc != t->expect_rc)
+			printf("    ERROR: expected rc=%d\n", t->expect_rc);
+		if (strcmp(str, t->expect_str))
+			printf("    ERROR: expected result %s\n", osmo_quote_str(t->expect_str, -1));
+	}
+
+	printf("- zero output buffer\n");
+	rc = osmo_bcd2str(NULL, 100, bcd, 1, 2, false);
+	printf("  bcd2str(NULL, ...) -> %d\n", rc);
+	OSMO_ASSERT(rc < 0);
+	rc = osmo_bcd2str((char*)23, 0, bcd, 1, 2, false);
+	printf("  bcd2str(dst, 0, ...) -> %d\n", rc);
+	OSMO_ASSERT(rc < 0);
+}
+
 static void str_escape_test(void)
 {
 	int i;
@@ -439,12 +636,306 @@ static void isqrt_test(void)
 			x = r * (UINT16_MAX/RAND_MAX);
 		else
 			x = r;
-		uint32_t sq = x*x;
+		uint32_t sq = (uint32_t)x*x;
 		uint32_t y = osmo_isqrt32(sq);
 		if (y != x)
 			printf("ERROR: x=%u, sq=%u, osmo_isqrt(%u) = %u\n", x, sq, sq, y);
 	}
 }
+
+
+struct osmo_sockaddr_to_str_and_uint_test_case {
+	uint16_t port;
+	bool omit_port;
+	const char *addr;
+	unsigned int addr_len;
+	bool omit_addr;
+	unsigned int expect_rc;
+	const char *expect_returned_addr;
+};
+
+struct osmo_sockaddr_to_str_and_uint_test_case osmo_sockaddr_to_str_and_uint_test_data[] = {
+	{
+		.port = 0,
+		.addr = "0.0.0.0",
+		.addr_len = 20,
+		.expect_rc = 7,
+	},
+	{
+		.port = 65535,
+		.addr = "255.255.255.255",
+		.addr_len = 20,
+		.expect_rc = 15,
+	},
+	{
+		.port = 1234,
+		.addr = "234.23.42.123",
+		.addr_len = 20,
+		.expect_rc = 13,
+	},
+	{
+		.port = 1234,
+		.addr = "234.23.42.123",
+		.addr_len = 10,
+		.expect_rc = 13,
+		.expect_returned_addr = "234.23.42",
+	},
+	{
+		.port = 1234,
+		.omit_port = true,
+		.addr = "234.23.42.123",
+		.addr_len = 20,
+		.expect_rc = 13,
+	},
+	{
+		.port = 1234,
+		.addr = "234.23.42.123",
+		.omit_addr = true,
+		.expect_rc = 0,
+		.expect_returned_addr = "",
+	},
+	{
+		.port = 1234,
+		.addr = "234.23.42.123",
+		.addr_len = 0,
+		.expect_rc = 13,
+		.expect_returned_addr = "",
+	},
+	{
+		.port = 1234,
+		.addr = "234.23.42.123",
+		.omit_port = true,
+		.omit_addr = true,
+		.expect_rc = 0,
+		.expect_returned_addr = "",
+	},
+};
+
+static void osmo_sockaddr_to_str_and_uint_test(void)
+{
+	int i;
+	printf("\n%s\n", __func__);
+
+	for (i = 0; i < ARRAY_SIZE(osmo_sockaddr_to_str_and_uint_test_data); i++) {
+		struct osmo_sockaddr_to_str_and_uint_test_case *t =
+			&osmo_sockaddr_to_str_and_uint_test_data[i];
+
+		struct sockaddr_in sin = {
+			.sin_family = AF_INET,
+			.sin_port = htons(t->port),
+		};
+		inet_aton(t->addr, &sin.sin_addr);
+
+		char addr[20] = {};
+		uint16_t port = 0;
+		unsigned int rc;
+
+		rc = osmo_sockaddr_to_str_and_uint(
+			t->omit_addr? NULL : addr, t->addr_len,
+			t->omit_port? NULL : &port,
+			(const struct sockaddr*)&sin);
+
+		printf("[%d] %s:%u%s%s addr_len=%u --> %s:%u rc=%u\n",
+		       i,
+		       t->addr ? : "-",
+		       t->port,
+		       t->omit_addr ? " (omit addr)" : "",
+		       t->omit_port ? " (omit port)" : "",
+		       t->addr_len,
+		       addr, port, rc);
+		if (rc != t->expect_rc)
+			printf("ERROR: Expected rc = %u\n", t->expect_rc);
+		if (!t->expect_returned_addr)
+			t->expect_returned_addr = t->addr;
+		if (strcmp(t->expect_returned_addr, addr))
+			printf("ERROR: Expected addr = '%s'\n", t->expect_returned_addr);
+		if (!t->omit_port && port != t->port)
+			printf("ERROR: Expected port = %u\n", t->port);
+	}
+}
+
+struct osmo_str_tolowupper_test_data {
+	const char *in;
+	bool use_static_buf;
+	size_t buflen;
+	const char *expect_lower;
+	const char *expect_upper;
+	size_t expect_rc;
+	size_t expect_rc_inplace;
+};
+
+struct osmo_str_tolowupper_test_data osmo_str_tolowupper_tests[] = {
+	{
+		.in = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()",
+		.use_static_buf = true,
+		.expect_lower = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz!@#$%^&*()",
+		.expect_upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()",
+	},
+	{
+		.in = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()",
+		.buflen = 99,
+		.expect_lower = "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz!@#$%^&*()",
+		.expect_upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()",
+		.expect_rc = 62,
+		.expect_rc_inplace = 62,
+	},
+	{
+		.in = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()",
+		.buflen = 0,
+		.expect_lower = "Unset",
+		.expect_upper = "Unset",
+		.expect_rc = 62,
+		.expect_rc_inplace = 0,
+	},
+	{
+		.in = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()",
+		.buflen = 1,
+		.expect_lower = "",
+		.expect_upper = "",
+		.expect_rc = 62,
+		.expect_rc_inplace = 0,
+	},
+	{
+		.in = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()",
+		.buflen = 2,
+		.expect_lower = "a",
+		.expect_upper = "A",
+		.expect_rc = 62,
+		.expect_rc_inplace = 1,
+	},
+	{
+		.in = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()",
+		.buflen = 28,
+		.expect_lower = "abcdefghijklmnopqrstuvwxyza",
+		.expect_upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZA",
+		.expect_rc = 62,
+		.expect_rc_inplace = 27,
+	},
+};
+
+
+static void osmo_str_tolowupper_test()
+{
+	int i;
+	char buf[128];
+	bool ok = true;
+	printf("\n%s\n", __func__);
+
+	for (i = 0; i < ARRAY_SIZE(osmo_str_tolowupper_tests); i++) {
+		struct osmo_str_tolowupper_test_data *d = &osmo_str_tolowupper_tests[i];
+		size_t rc = 0;
+		const char *res;
+
+		/* tolower */
+		if (d->use_static_buf) {
+			res = osmo_str_tolower(d->in);
+			printf("osmo_str_tolower(%s)\n", osmo_quote_str(d->in, -1));
+			printf("               = %s\n", osmo_quote_str(res, -1));
+		} else {
+			OSMO_ASSERT(sizeof(buf) >= d->buflen);
+			osmo_strlcpy(buf, "Unset", sizeof(buf));
+			rc = osmo_str_tolower_buf(buf, d->buflen, d->in);
+			res = buf;
+			printf("osmo_str_tolower_buf(%zu, %s)\n", d->buflen, osmo_quote_str(d->in, -1));
+			printf("                   = %zu, %s\n", rc, osmo_quote_str(res, -1));
+		}
+
+		if (strcmp(res, d->expect_lower)) {
+			printf("ERROR: osmo_str_tolowupper_test[%d] tolower\n"
+			       "       got %s\n", i, osmo_quote_str(res, -1));
+			printf("  expected %s\n", osmo_quote_str(d->expect_lower, -1));
+			ok = false;
+		}
+
+		if (!d->use_static_buf && d->expect_rc != rc) {
+			printf("ERROR: osmo_str_tolowupper_test[%d] tolower\n"
+			       "       got rc=%zu, expected rc=%zu\n", i, rc, d->expect_rc);
+			ok = false;
+		}
+
+		/* tolower, in-place */
+		if (!d->use_static_buf) {
+			osmo_strlcpy(buf,
+				     d->buflen ? d->in : "Unset",
+				     sizeof(buf));
+			rc = osmo_str_tolower_buf(buf, d->buflen, buf);
+			res = buf;
+			printf("osmo_str_tolower_buf(%zu, %s, in-place)\n",
+			       d->buflen, osmo_quote_str(d->in, -1));
+			printf("                   = %zu, %s\n", rc, osmo_quote_str(res, -1));
+
+			if (strcmp(res, d->expect_lower)) {
+				printf("ERROR: osmo_str_tolowupper_test[%d] tolower in-place\n"
+				       "       got %s\n", i, osmo_quote_str(res, -1));
+				printf("  expected %s\n", osmo_quote_str(d->expect_lower, -1));
+				ok = false;
+			}
+
+			if (d->expect_rc_inplace != rc) {
+				printf("ERROR: osmo_str_tolowupper_test[%d] tolower in-place\n"
+				       "       got rc=%zu, expected rc=%zu\n",
+				       i, rc, d->expect_rc_inplace);
+				ok = false;
+			}
+		}
+
+		/* toupper */
+		if (d->use_static_buf) {
+			res = osmo_str_toupper(d->in);
+			printf("osmo_str_toupper(%s)\n", osmo_quote_str(d->in, -1));
+			printf("               = %s\n", osmo_quote_str(res, -1));
+		} else {
+			OSMO_ASSERT(sizeof(buf) >= d->buflen);
+			osmo_strlcpy(buf, "Unset", sizeof(buf));
+			rc = osmo_str_toupper_buf(buf, d->buflen, d->in);
+			res = buf;
+			printf("osmo_str_toupper_buf(%zu, %s)\n", d->buflen, osmo_quote_str(d->in, -1));
+			printf("                   = %zu, %s\n", rc, osmo_quote_str(res, -1));
+		}
+
+		if (strcmp(res, d->expect_upper)) {
+			printf("ERROR: osmo_str_tolowupper_test[%d] toupper\n"
+			       "       got %s\n", i, osmo_quote_str(res, -1));
+			printf("  expected %s\n", osmo_quote_str(d->expect_upper, -1));
+			ok = false;
+		}
+
+		if (!d->use_static_buf && d->expect_rc != rc) {
+			printf("ERROR: osmo_str_tolowupper_test[%d] toupper\n"
+			       "       got rc=%zu, expected rc=%zu\n", i, rc, d->expect_rc);
+			ok = false;
+		}
+
+		/* toupper, in-place */
+		if (!d->use_static_buf) {
+			osmo_strlcpy(buf,
+				     d->buflen ? d->in : "Unset",
+				     sizeof(buf));
+			rc = osmo_str_toupper_buf(buf, d->buflen, buf);
+			res = buf;
+			printf("osmo_str_toupper_buf(%zu, %s, in-place)\n",
+			       d->buflen, osmo_quote_str(d->in, -1));
+			printf("                   = %zu, %s\n", rc, osmo_quote_str(res, -1));
+
+			if (strcmp(res, d->expect_upper)) {
+				printf("ERROR: osmo_str_tolowupper_test[%d] toupper in-place\n"
+				       "       got %s\n", i, osmo_quote_str(res, -1));
+				printf("  expected %s\n", osmo_quote_str(d->expect_upper, -1));
+				ok = false;
+			}
+
+			if (d->expect_rc_inplace != rc) {
+				printf("ERROR: osmo_str_tolowupper_test[%d] toupper in-place\n"
+				       "       got rc=%zu, expected rc=%zu\n",
+				       i, rc, d->expect_rc_inplace);
+				ok = false;
+			}
+		}
+	}
+
+	OSMO_ASSERT(ok);
+}
+
 
 int main(int argc, char **argv)
 {
@@ -453,11 +944,15 @@ int main(int argc, char **argv)
 
 	hexdump_test();
 	hexparse_test();
-	test_idtag_parsing();
+	test_ipa_ccm_id_get_parsing();
+	test_ipa_ccm_id_resp_parsing();
 	test_is_hexstr();
 	bcd_test();
+	bcd2str_test();
 	str_escape_test();
 	str_quote_test();
 	isqrt_test();
+	osmo_sockaddr_to_str_and_uint_test();
+	osmo_str_tolowupper_test();
 	return 0;
 }

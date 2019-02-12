@@ -33,4 +33,20 @@ Test GSUP message decoding/encoding
           SS/USSD processUnstructuredSS-Request / Invoke OK
   Testing SS/USSD processUnstructuredSS-Request / ReturnResult
           SS/USSD processUnstructuredSS-Request / ReturnResult OK
+  Testing MO-ForwardSM (MSC -> SMSC) Request
+          MO-ForwardSM (MSC -> SMSC) Request OK
+  Testing MT-ForwardSM (MSC -> SMSC) Request
+          MT-ForwardSM (MSC -> SMSC) Request OK
+  Testing MO-/MT-ForwardSM Response
+          MO-/MT-ForwardSM Response OK
+  Testing MO-/MT-ForwardSM Error
+          MO-/MT-ForwardSM Error OK
+  Testing ReadyForSM (MSC -> SMSC) Indication
+          ReadyForSM (MSC -> SMSC) Indication OK
+  Testing Check IMEI Request
+          Check IMEI Request OK
+  Testing Check IMEI Error
+          Check IMEI Error OK
+  Testing Check IMEI Result
+          Check IMEI Result OK
 Done.

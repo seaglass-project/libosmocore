@@ -414,7 +414,7 @@ const char *osmo_fsm_inst_name(struct osmo_fsm_inst *fi)
 		return fi->fsm->name;
 }
 
-/*! get human-readable name of FSM instance
+/*! get human-readable name of FSM state
  *  \param[in] fsm FSM descriptor
  *  \param[in] state FSM state number
  *  \returns string rendering of the FSM state
@@ -437,6 +437,11 @@ static int state_chg(struct osmo_fsm_inst *fi, uint32_t new_state,
 	uint32_t old_state = fi->state;
 	const struct osmo_fsm_state *st = &fsm->states[fi->state];
 
+	/* Limit to 0x7fffffff seconds as explained by
+	 * _osmo_fsm_inst_state_chg()'s API doc. */
+	if (timeout_secs > 0x7fffffff)
+		timeout_secs = 0x7fffffff;
+
 	/* validate if new_state is a valid state */
 	if (!(st->out_state_mask & (1 << new_state))) {
 		LOGPFSMLSRC(fi, LOGL_ERROR, file, line,
@@ -458,9 +463,10 @@ static int state_chg(struct osmo_fsm_inst *fi, uint32_t new_state,
 	fi->state = new_state;
 	st = &fsm->states[new_state];
 
-	if (!keep_timer && timeout_secs) {
+	if (!keep_timer) {
 		fi->T = T;
-		osmo_timer_schedule(&fi->timer, timeout_secs, 0);
+		if (timeout_secs)
+			osmo_timer_schedule(&fi->timer, timeout_secs, 0);
 	}
 
 	/* Call 'onenter' last, user might terminate FSM from there */
@@ -480,15 +486,32 @@ static int state_chg(struct osmo_fsm_inst *fi, uint32_t new_state,
  *  function.  It verifies that the existing state actually permits a
  *  transition to new_state.
  *
- *  timeout_secs and T are optional parameters, and only have any effect
- *  if timeout_secs is not 0.  If the timeout function is used, then the
- *  new_state is entered, and the FSM instances timer is set to expire
- *  in timeout_secs functions.   At that time, the FSM's timer_cb
- *  function will be called for handling of the timeout by the user.
+ *  If timeout_secs is 0, stay in the new state indefinitely, without a timeout
+ *  (stop the FSM instance's timer if it was runnning).
+ *
+ *  If timeout_secs > 0, start or reset the FSM instance's timer with this
+ *  timeout. On expiry, invoke the FSM instance's timer_cb -- if no timer_cb is
+ *  set, an expired timer immediately terminates the FSM instance with
+ *  OSMO_FSM_TERM_TIMEOUT.
+ *
+ *  The value of T is stored in fi->T and is then available for query in
+ *  timer_cb. If passing timeout_secs == 0, it is recommended to also pass T ==
+ *  0, so that fi->T is reset to 0 when no timeout is invoked.
+ *
+ *  See also osmo_tdef_fsm_inst_state_chg() from the osmo_tdef API, which
+ *  provides a unified way to configure and apply GSM style Tnnnn timers to FSM
+ *  state transitions.
+ *
+ *  Range: since time_t's maximum value is not well defined in a cross platform
+ *  way, clamp timeout_secs to the maximum of the signed 32bit range, or roughly
+ *  68 years (float(0x7fffffff) / (60. * 60 * 24 * 365.25) = 68.0497). Thus
+ *  ensure that very large timeouts do not wrap around to become very small
+ *  ones. Note though that this might still be unsafe on systems with a time_t
+ *  range below 32 bits.
  *
  *  \param[in] fi FSM instance whose state is to change
  *  \param[in] new_state The new state into which we should change
- *  \param[in] timeout_secs Timeout in seconds (if !=0)
+ *  \param[in] timeout_secs Timeout in seconds (if !=0), maximum-clamped to 2147483647 seconds.
  *  \param[in] T Timer number (if \ref timeout_secs != 0)
  *  \param[in] file Calling source file (from osmo_fsm_inst_state_chg macro)
  *  \param[in] line Calling source line (from osmo_fsm_inst_state_chg macro)

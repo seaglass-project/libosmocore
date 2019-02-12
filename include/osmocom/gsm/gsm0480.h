@@ -108,14 +108,18 @@ int gsm0480_parse_facility_ie(const uint8_t *facility_ie, uint16_t length,
 int gsm0480_decode_ss_request(const struct gsm48_hdr *hdr, uint16_t len,
 				struct ss_request *request);
 
+struct msgb *gsm0480_msgb_alloc_name(const char *name);
+struct msgb *gsm0480_gen_ussd_resp_7bit(uint8_t invoke_id, const char *text);
+struct msgb *gsm0480_gen_return_error(uint8_t invoke_id, uint8_t error_code);
+struct msgb *gsm0480_gen_reject(int invoke_id, uint8_t problem_tag, uint8_t problem_code);
+
 struct msgb *gsm0480_create_ussd_resp(uint8_t invoke_id, uint8_t trans_id, const char *text);
 struct msgb *gsm0480_create_unstructuredSS_Notify(int alertPattern, const char *text);
 struct msgb *gsm0480_create_notifySS(const char *text);
 struct msgb *gsm0480_create_ussd_notify(int level, const char *text);
-struct msgb *gsm0480_create_ussd_release_complete(void);
+struct msgb *gsm0480_create_ussd_release_complete(void)
+	OSMO_DEPRECATED("Use gsm0480_create_release_complete() instead.");
+struct msgb *gsm0480_create_release_complete(uint8_t trans_id);
 
 int gsm0480_wrap_invoke(struct msgb *msg, int op, int link_id);
 int gsm0480_wrap_facility(struct msgb *msg);
-
-struct gsm48_hdr *gsm0480_l3hdr_push(struct msgb *msg, uint8_t proto_discr,
-				     uint8_t msg_type);

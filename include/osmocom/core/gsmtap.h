@@ -33,7 +33,7 @@
 #define GSMTAP_TYPE_UM		0x01
 #define GSMTAP_TYPE_ABIS	0x02
 #define GSMTAP_TYPE_UM_BURST	0x03	/* raw burst bits */
-#define GSMTAP_TYPE_SIM		0x04
+#define GSMTAP_TYPE_SIM		0x04	/* ISO 7816 smart card interface */
 #define GSMTAP_TYPE_TETRA_I1		0x05	/* tetra air interface */
 #define GSMTAP_TYPE_TETRA_I1_BURST	0x06	/* tetra air interface */
 #define GSMTAP_TYPE_WMX_BURST	0x07    /* WiMAX burst */
@@ -100,6 +100,18 @@
 #define GSMTAP_GPRS_MCS(N)	(GSMTAP_GPRS_MCS_BASE + N)
 
 #define GSMTAP_CHANNEL_ACCH	0x80
+
+/* ====== DO NOT MAKE UNAPPROVED MODIFICATIONS HERE ===== */
+
+/* sub-types for GSMTAP_TYPE_SIM */
+#define GSMTAP_SIM_APDU		0x00 /* APDU data (complete APDU) */
+#define GSMTAP_SIM_ATR		0x01 /* card ATR data */
+#define GSMTAP_SIM_PPS_REQ		0x02 /* PPS request data */
+#define GSMTAP_SIM_PPS_RSP		0x03 /* PPS response data */
+#define GSMTAP_SIM_TPDU_HDR		0x04 /* TPDU command header */
+#define GSMTAP_SIM_TPDU_CMD		0x05 /* TPDU command body */
+#define GSMTAP_SIM_TPDU_RSP		0x06 /* TPDU response body */
+#define GSMTAP_SIM_TPDU_SW		0x07 /* TPDU response trailer */
 
 /* ====== DO NOT MAKE UNAPPROVED MODIFICATIONS HERE ===== */
 
@@ -233,20 +245,43 @@ enum {
 
 /* LTE RRC message types */
 enum {
-    GSMTAP_LTE_RRC_SUB_DL_CCCH_Message = 0,
-    GSMTAP_LTE_RRC_SUB_DL_DCCH_Message,
-    GSMTAP_LTE_RRC_SUB_UL_CCCH_Message,
-    GSMTAP_LTE_RRC_SUB_UL_DCCH_Message,
-    GSMTAP_LTE_RRC_SUB_BCCH_BCH_Message,
-    GSMTAP_LTE_RRC_SUB_BCCH_DL_SCH_Message,
-    GSMTAP_LTE_RRC_SUB_PCCH_Message,
-    GSMTAP_LTE_RRC_SUB_MCCH_Message,
+	GSMTAP_LTE_RRC_SUB_DL_CCCH_Message = 0,
+	GSMTAP_LTE_RRC_SUB_DL_DCCH_Message,
+	GSMTAP_LTE_RRC_SUB_UL_CCCH_Message,
+	GSMTAP_LTE_RRC_SUB_UL_DCCH_Message,
+	GSMTAP_LTE_RRC_SUB_BCCH_BCH_Message,
+	GSMTAP_LTE_RRC_SUB_BCCH_DL_SCH_Message,
+	GSMTAP_LTE_RRC_SUB_PCCH_Message,
+	GSMTAP_LTE_RRC_SUB_MCCH_Message,
+	GSMTAP_LTE_RRC_SUB_BCCH_BCH_Message_MBMS,
+	GSMTAP_LTE_RRC_SUB_BCCH_DL_SCH_Message_BR,
+	GSMTAP_LTE_RRC_SUB_BCCH_DL_SCH_Message_MBMS,
+	GSMTAP_LTE_RRC_SUB_SC_MCCH_Message,
+	GSMTAP_LTE_RRC_SUB_SBCCH_SL_BCH_Message,
+	GSMTAP_LTE_RRC_SUB_SBCCH_SL_BCH_Message_V2X,
+	GSMTAP_LTE_RRC_SUB_DL_CCCH_Message_NB,
+	GSMTAP_LTE_RRC_SUB_DL_DCCH_Message_NB,
+	GSMTAP_LTE_RRC_SUB_UL_CCCH_Message_NB,
+	GSMTAP_LTE_RRC_SUB_UL_DCCH_Message_NB,
+	GSMTAP_LTE_RRC_SUB_BCCH_BCH_Message_NB,
+	GSMTAP_LTE_RRC_SUB_BCCH_BCH_Message_TDD_NB,
+	GSMTAP_LTE_RRC_SUB_BCCH_DL_SCH_Message_NB,
+	GSMTAP_LTE_RRC_SUB_PCCH_Message_NB,
+	GSMTAP_LTE_RRC_SUB_SC_MCCH_Message_NB,
 
-    GSMTAP_LTE_RRC_SUB_MAX
+	GSMTAP_LTE_RRC_SUB_MAX
+};
+
+/* LTE NAS message types */
+enum {
+	GSMTAP_LTE_NAS_PLAIN = 0,
+	GSMTAP_LTE_NAS_SEC_HEADER,
+
+	GSMTAP_LTE_NAS_SUB_MAX
 };
 
 /* ====== DO NOT MAKE UNAPPROVED MODIFICATIONS HERE ===== */
-/*! Structure of the GTMTAP pseudo-header */
+/*! Structure of the GSMTAP pseudo-header */
 struct gsmtap_hdr {
 	uint8_t version;	/*!< version, set to 0x01 currently */
 	uint8_t hdr_len;	/*!< length in number of 32bit words */
@@ -266,7 +301,7 @@ struct gsmtap_hdr {
 
 } __attribute__((packed));
 
-/*! Structure of the GTMTAP libosmocore logging header */
+/*! Structure of the GSMTAP libosmocore logging header */
 struct gsmtap_osmocore_log_hdr {
 	struct {
 		uint32_t sec;

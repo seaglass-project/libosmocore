@@ -119,25 +119,77 @@ struct osmo_fsm_inst {
 
 void osmo_fsm_log_addr(bool log_addr);
 
-#define LOGPFSML(fi, level, fmt, args...) \
-		LOGP((fi)->fsm->log_subsys, OSMO_MAX(level, (fi)->log_level), \
-			"%s{%s}: " fmt, \
-			osmo_fsm_inst_name(fi),				    \
-			osmo_fsm_state_name((fi)->fsm, (fi)->state), ## args)
+/*! Log using FSM instance's context, on explicit logging subsystem and level.
+ * \param fi  An osmo_fsm_inst.
+ * \param subsys  A logging subsystem, e.g. DLGLOBAL.
+ * \param level  A logging level, e.g. LOGL_INFO.
+ * \param fmt  printf-like format string.
+ * \param args  Format string arguments.
+ */
+#define LOGPFSMSL(fi, subsys, level, fmt, args...) \
+		LOGPFSMSLSRC(fi, subsys, level, __FILE__, __LINE__, fmt, ## args)
 
-#define LOGPFSM(fi, fmt, args...) \
-		LOGPFSML(fi, (fi)->log_level, fmt, ## args)
-
-#define LOGPFSMLSRC(fi, level, caller_file, caller_line, fmt, args...) \
-		LOGPSRC((fi)->fsm->log_subsys, level, \
+/*! Log using FSM instance's context, on explicit logging subsystem and level,
+ * and passing explicit source file and line information.
+ * \param fi  An osmo_fsm_inst.
+ * \param subsys  A logging subsystem, e.g. DLGLOBAL.
+ * \param level  A logging level, e.g. LOGL_INFO.
+ * \param caller_file  A string constant containing a source file path, like __FILE__.
+ * \param caller_line  A number constant containing a source file line, like __LINE__.
+ * \param fmt  printf-like format string.
+ * \param args  Format string arguments.
+ */
+#define LOGPFSMSLSRC(fi, subsys, level, caller_file, caller_line, fmt, args...) \
+		LOGPSRC(subsys, level, \
 			caller_file, caller_line, \
 			"%s{%s}: " fmt, \
 			osmo_fsm_inst_name(fi), \
-			osmo_fsm_state_name((fi)->fsm, (fi)->state), \
-			## args)
+			(fi) ? osmo_fsm_state_name((fi)->fsm, (fi)->state) : "fi=NULL", ## args)
 
+
+/*! Log using FSM instance's context, on explicit logging level.
+ * \param fi  An osmo_fsm_inst.
+ * \param level  A logging level, e.g. LOGL_INFO.
+ * \param fmt  printf-like format string.
+ * \param args  Format string arguments.
+ */
+#define LOGPFSML(fi, level, fmt, args...) \
+		LOGPFSMLSRC(fi, level, __FILE__, __LINE__, fmt, ## args)
+
+/*! Log using FSM instance's context, on explicit logging level, and with explicit source file and line info.
+ * The log subsystem to log on is obtained from the underlying FSM definition.
+ * \param fi  An osmo_fsm_inst.
+ * \param level  A logging level, e.g. LOGL_INFO.
+ * \param caller_file  A string constant containing a source file path, like __FILE__.
+ * \param caller_line  A number constant containing a source file line, like __LINE__.
+ * \param fmt  printf-like format string.
+ * \param args  Format string arguments.
+ */
+#define LOGPFSMLSRC(fi, level, caller_file, caller_line, fmt, args...) \
+		LOGPFSMSLSRC(fi, (fi) ? (fi)->fsm->log_subsys : DLGLOBAL, level, \
+			     caller_file, caller_line, fmt, ## args)
+
+/*! Log using FSM instance's context.
+ * The log level to log on is obtained from the FSM instance.
+ * The log subsystem to log on is obtained from the underlying FSM definition.
+ * \param fi  An osmo_fsm_inst.
+ * \param fmt  printf-like format string.
+ * \param args  Format string arguments.
+ */
+#define LOGPFSM(fi, fmt, args...) \
+		LOGPFSML(fi, (fi) ? (fi)->log_level : LOGL_ERROR, fmt, ## args)
+
+/*! Log using FSM instance's context, with explicit source file and line info.
+ * The log level to log on is obtained from the FSM instance.
+ * The log subsystem to log on is obtained from the underlying FSM definition.
+ * \param fi  An osmo_fsm_inst.
+ * \param caller_file  A string constant containing a source file path, like __FILE__.
+ * \param caller_line  A number constant containing a source file line, like __LINE__.
+ * \param fmt  printf-like format string.
+ * \param args  Format string arguments.
+ */
 #define LOGPFSMSRC(fi, caller_file, caller_line, fmt, args...) \
-		LOGPFSMLSRC(fi, (fi)->log_level, \
+		LOGPFSMLSRC(fi, (fi) ? (fi)->log_level : LOGL_ERROR, \
 			    caller_file, caller_line, \
 			    fmt, ## args)
 
@@ -168,7 +220,7 @@ const char *osmo_fsm_state_name(struct osmo_fsm *fsm, uint32_t state);
 
 /*! return the name of the state the FSM instance is currently in. */
 static inline const char *osmo_fsm_inst_state_name(struct osmo_fsm_inst *fi)
-{ return osmo_fsm_state_name(fi->fsm, fi->state); }
+{ return fi ? osmo_fsm_state_name(fi->fsm, fi->state) : "NULL"; }
 
 /*! perform a state change of the given FSM instance
  *
@@ -178,7 +230,7 @@ static inline const char *osmo_fsm_inst_state_name(struct osmo_fsm_inst *fi)
  */
 #define osmo_fsm_inst_state_chg(fi, new_state, timeout_secs, T) \
 	_osmo_fsm_inst_state_chg(fi, new_state, timeout_secs, T, \
-				 __BASE_FILE__, __LINE__)
+				 __FILE__, __LINE__)
 int _osmo_fsm_inst_state_chg(struct osmo_fsm_inst *fi, uint32_t new_state,
 			     unsigned long timeout_secs, int T,
 			     const char *file, int line);
@@ -194,7 +246,7 @@ int _osmo_fsm_inst_state_chg(struct osmo_fsm_inst *fi, uint32_t new_state,
  */
 #define osmo_fsm_inst_state_chg_keep_timer(fi, new_state) \
 	_osmo_fsm_inst_state_chg_keep_timer(fi, new_state, \
-				 __BASE_FILE__, __LINE__)
+				 __FILE__, __LINE__)
 int _osmo_fsm_inst_state_chg_keep_timer(struct osmo_fsm_inst *fi, uint32_t new_state,
 					const char *file, int line);
 
@@ -205,7 +257,7 @@ int _osmo_fsm_inst_state_chg_keep_timer(struct osmo_fsm_inst *fi, uint32_t new_s
  *  purposes. See there for documentation.
  */
 #define osmo_fsm_inst_dispatch(fi, event, data) \
-	_osmo_fsm_inst_dispatch(fi, event, data, __BASE_FILE__, __LINE__)
+	_osmo_fsm_inst_dispatch(fi, event, data, __FILE__, __LINE__)
 int _osmo_fsm_inst_dispatch(struct osmo_fsm_inst *fi, uint32_t event, void *data,
 			    const char *file, int line);
 
@@ -216,7 +268,7 @@ int _osmo_fsm_inst_dispatch(struct osmo_fsm_inst *fi, uint32_t event, void *data
  *  See there for documentation.
  */
 #define osmo_fsm_inst_term(fi, cause, data) \
-	_osmo_fsm_inst_term(fi, cause, data, __BASE_FILE__, __LINE__)
+	_osmo_fsm_inst_term(fi, cause, data, __FILE__, __LINE__)
 void _osmo_fsm_inst_term(struct osmo_fsm_inst *fi,
 			 enum osmo_fsm_term_cause cause, void *data,
 			 const char *file, int line);
@@ -228,7 +280,7 @@ void _osmo_fsm_inst_term(struct osmo_fsm_inst *fi,
  *  purposes. See there for documentation.
  */
 #define osmo_fsm_inst_term_children(fi, cause, data) \
-	_osmo_fsm_inst_term_children(fi, cause, data, __BASE_FILE__, __LINE__)
+	_osmo_fsm_inst_term_children(fi, cause, data, __FILE__, __LINE__)
 void _osmo_fsm_inst_term_children(struct osmo_fsm_inst *fi,
 				  enum osmo_fsm_term_cause cause,
 				  void *data,

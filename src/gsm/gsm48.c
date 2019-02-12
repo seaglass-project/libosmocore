@@ -433,6 +433,42 @@ const char *gsm48_mi_type_name(uint8_t mi)
 	return get_value_string(mi_type_names, mi);
 }
 
+/*! Return a human readable representation of a Mobile Identity in static buffer.
+ * \param[in] mi  Mobile Identity buffer containing 3GPP TS 04.08 style MI type and data.
+ * \param[in] mi_len  Length of mi.
+ * \return A string like "IMSI-1234567", "TMSI-0x1234ABCD" or "unknown", "TMSI-invalid"...
+ */
+const char *osmo_mi_name(const uint8_t *mi, uint8_t mi_len)
+{
+	static char mi_name[10 + GSM48_MI_SIZE + 1];
+	uint8_t mi_type;
+	uint32_t tmsi;
+	char mi_string[GSM48_MI_SIZE];
+
+	mi_type = (mi && mi_len) ? (mi[0] & GSM_MI_TYPE_MASK) : GSM_MI_TYPE_NONE;
+
+	switch (mi_type) {
+	case GSM_MI_TYPE_TMSI:
+		/* Table 10.5.4.3, reverse generate_mid_from_tmsi */
+		if (mi_len == GSM48_TMSI_LEN && mi[0] == (0xf0 | GSM_MI_TYPE_TMSI)) {
+			tmsi = osmo_load32be(&mi[1]);
+			snprintf(mi_name, sizeof(mi_name), "TMSI-0x%08" PRIX32, tmsi);
+			return mi_name;
+		}
+		return "TMSI-invalid";
+
+	case GSM_MI_TYPE_IMSI:
+	case GSM_MI_TYPE_IMEI:
+	case GSM_MI_TYPE_IMEISV:
+		osmo_bcd2str(mi_string, sizeof(mi_string), mi, 1, (mi_len * 2) - (mi[0] & GSM_MI_ODD ? 0 : 1), true);
+		snprintf(mi_name, sizeof(mi_name), "%s-%s", gsm48_mi_type_name(mi_type), mi_string);
+		return mi_name;
+
+	default:
+		return "unknown";
+	}
+}
+
 /*! Checks is particular message is cipherable in A/Gb mode according to
  *         3GPP TS 24.008 § 4.7.1.2
  *  \param[in] hdr Message header
@@ -601,19 +637,23 @@ int gsm48_generate_mid_from_tmsi(uint8_t *buf, uint32_t tmsi)
 	return 7;
 }
 
-/*! Generate TS 24.008 §10.5.1.4 Mobile ID
- *  \param[out] buf Caller-provided output buffer
+/*! Generate TS 24.008 §10.5.1.4 Mobile ID of BCD type from ASCII string
+ *  \param[out] buf Caller-provided output buffer of at least GSM48_MID_MAX_SIZE bytes
  *  \param[in] id Identity to be encoded
+ *  \param[in] mi_type Type of identity (e.g. GSM_MI_TYPE_IMSI, IMEI, IMEISV)
  *  \returns number of bytes used in \a buf */
 uint8_t gsm48_generate_mid(uint8_t *buf, const char *id, uint8_t mi_type)
 {
-	uint8_t length = strnlen(id, 255), i, off = 0, odd = (length & 1) == 1;
+	uint8_t length = strnlen(id, 16), i, off = 0, odd = (length & 1) == 1;
+	/* maximum length == 16 (IMEISV) */
 
 	buf[0] = GSM48_IE_MOBILE_ID;
-	buf[2] = osmo_char2bcd(id[0]) << 4 | mi_type | (odd << 3);
+	buf[2] = osmo_char2bcd(id[0]) << 4 | (mi_type & GSM_MI_TYPE_MASK) | (odd << 3);
 
 	/* if the length is even we will fill half of the last octet */
 	buf[1] = (length + (odd ? 1 : 2)) >> 1;
+	/* buf[1] maximum = 18/2 = 9 */
+	OSMO_ASSERT(buf[1] <= 9);
 
 	for (i = 1; i < buf[1]; ++i) {
 		uint8_t upper, lower = osmo_char2bcd(id[++off]);
@@ -625,6 +665,7 @@ uint8_t gsm48_generate_mid(uint8_t *buf, const char *id, uint8_t mi_type)
 		buf[2 + i] = (upper << 4) | lower;
 	}
 
+	/* maximum return value: 2 + 9 = 11 */
 	return 2 + buf[1];
 }
 
@@ -637,25 +678,26 @@ int gsm48_generate_mid_from_imsi(uint8_t *buf, const char *imsi)
 	return gsm48_generate_mid(buf, imsi, GSM_MI_TYPE_IMSI);
 }
 
-/*! Convert TS 04.08 Mobile Identity (10.5.1.4) to string
+/*! Convert TS 04.08 Mobile Identity (10.5.1.4) to string.
+ * This function does not validate the Mobile Identity digits, i.e. digits > 9 are returned as 'A'-'F'.
  *  \param[out] string Caller-provided buffer for output
  *  \param[in] str_len Length of \a string in bytes
  *  \param[in] mi Mobile Identity to be stringified
  *  \param[in] mi_len Length of \a mi in bytes
- *  \returns length of string written to \a string */
+ *  \returns WARNING: the return value of this function is not well implemented.
+ *           Depending on the MI type and amount of output buffer, this may return
+ *           the nr of written bytes, or the written strlen(), or the snprintf()
+ *           style strlen()-if-the-buffer-were-large-enough. */
 int gsm48_mi_to_string(char *string, const int str_len, const uint8_t *mi,
 		       const int mi_len)
 {
-	int i;
+	int rc;
 	uint8_t mi_type;
-	char *str_cur = string;
 	uint32_t tmsi;
 
-	mi_type = mi[0] & GSM_MI_TYPE_MASK;
+	mi_type = (mi && mi_len) ? (mi[0] & GSM_MI_TYPE_MASK) : GSM_MI_TYPE_NONE;
 
 	switch (mi_type) {
-	case GSM_MI_TYPE_NONE:
-		break;
 	case GSM_MI_TYPE_TMSI:
 		/* Table 10.5.4.3, reverse generate_mid_from_tmsi */
 		if (mi_len == GSM48_TMSI_LEN && mi[0] == (0xf0 | GSM_MI_TYPE_TMSI)) {
@@ -666,23 +708,24 @@ int gsm48_mi_to_string(char *string, const int str_len, const uint8_t *mi,
 	case GSM_MI_TYPE_IMSI:
 	case GSM_MI_TYPE_IMEI:
 	case GSM_MI_TYPE_IMEISV:
-		*str_cur++ = osmo_bcd2char(mi[0] >> 4);
+		rc = osmo_bcd2str(string, str_len, mi,
+				  1, mi_len * 2 - ((mi[0] & GSM_MI_ODD) ? 0 : 1), true);
+		/* osmo_bcd2str() returns snprintf style strlen(), this returns bytes written. */
+		if (rc < 0)
+			return 0;
+		else if (rc < str_len)
+			return rc + 1;
+		else
+			return strlen(string) + 1;
 
-                for (i = 1; i < mi_len; i++) {
-			if (str_cur + 2 >= string + str_len)
-				return str_cur - string;
-			*str_cur++ = osmo_bcd2char(mi[i] & 0xf);
-			/* skip last nibble in last input byte when GSM_EVEN */
-			if( (i != mi_len-1) || (mi[0] & GSM_MI_ODD))
-				*str_cur++ = osmo_bcd2char(mi[i] >> 4);
-		}
-		break;
 	default:
 		break;
 	}
-	*str_cur++ = '\0';
 
-	return str_cur - string;
+	if (str_len < 1)
+		return 0;
+	*string = '\0';
+	return 1;
 }
 
 /*! Parse TS 04.08 Routing Area Identifier
@@ -945,6 +988,60 @@ const struct value_string gsm48_cc_msgtype_names[] = {
 	{ 0, NULL }
 };
 
+/*! TS 04.08 10.5..4.11 Call Control Cause Values */
+const struct value_string gsm48_cc_cause_names[] = {
+	{ GSM48_CC_CAUSE_UNASSIGNED_NR,		"UNASSIGNED_NR" },
+	{ GSM48_CC_CAUSE_NO_ROUTE,		"NO_ROUTE" },
+	{ GSM48_CC_CAUSE_CHAN_UNACCEPT,		"CHAN_UNACCEPT" },
+	{ GSM48_CC_CAUSE_OP_DET_BARRING,	"OP_DET_BARRING" },
+	{ GSM48_CC_CAUSE_NORM_CALL_CLEAR,	"NORM_CALL_CLEAR" },
+	{ GSM48_CC_CAUSE_USER_BUSY,		"USER_BUSY" },
+	{ GSM48_CC_CAUSE_USER_NOTRESPOND,	"USER_NOTRESPOND" },
+	{ GSM48_CC_CAUSE_USER_ALERTING_NA,	"USER_ALERTING_NA" },
+	{ GSM48_CC_CAUSE_CALL_REJECTED,		"CALL_REJECTED" },
+	{ GSM48_CC_CAUSE_NUMBER_CHANGED,	"NUMBER_CHANGED" },
+	{ GSM48_CC_CAUSE_PRE_EMPTION,		"PRE_EMPTION" },
+	{ GSM48_CC_CAUSE_NONSE_USER_CLR,	"NONSE_USER_CLR" },
+	{ GSM48_CC_CAUSE_DEST_OOO,		"DEST_OOO" },
+	{ GSM48_CC_CAUSE_INV_NR_FORMAT,		"INV_NR_FORMAT" },
+	{ GSM48_CC_CAUSE_FACILITY_REJ,		"FACILITY_REJ" },
+	{ GSM48_CC_CAUSE_RESP_STATUS_INQ,	"RESP_STATUS_INQ" },
+	{ GSM48_CC_CAUSE_NORMAL_UNSPEC,		"NORMAL_UNSPEC" },
+	{ GSM48_CC_CAUSE_NO_CIRCUIT_CHAN,	"NO_CIRCUIT_CHAN" },
+	{ GSM48_CC_CAUSE_NETWORK_OOO,		"NETWORK_OOO" },
+	{ GSM48_CC_CAUSE_TEMP_FAILURE,		"TEMP_FAILURE" },
+	{ GSM48_CC_CAUSE_SWITCH_CONG,		"SWITCH_CONG" },
+	{ GSM48_CC_CAUSE_ACC_INF_DISCARD,	"ACC_INF_DISCARD" },
+	{ GSM48_CC_CAUSE_REQ_CHAN_UNAVAIL,	"REQ_CHAN_UNAVAIL" },
+	{ GSM48_CC_CAUSE_RESOURCE_UNAVAIL,	"RESOURCE_UNAVAIL" },
+	{ GSM48_CC_CAUSE_QOS_UNAVAIL,		"QOS_UNAVAIL" },
+	{ GSM48_CC_CAUSE_REQ_FAC_NOT_SUBSC,	"REQ_FAC_NOT_SUBSC" },
+	{ GSM48_CC_CAUSE_INC_BARRED_CUG,	"INC_BARRED_CUG" },
+	{ GSM48_CC_CAUSE_BEARER_CAP_UNAUTH,	"BEARER_CAP_UNAUTH" },
+	{ GSM48_CC_CAUSE_BEARER_CA_UNAVAIL,	"BEARER_CA_UNAVAIL" },
+	{ GSM48_CC_CAUSE_SERV_OPT_UNAVAIL,	"SERV_OPT_UNAVAIL" },
+	{ GSM48_CC_CAUSE_BEARERSERV_UNIMPL,	"BEARERSERV_UNIMPL" },
+	{ GSM48_CC_CAUSE_ACM_GE_ACM_MAX,	"ACM_GE_ACM_MAX" },
+	{ GSM48_CC_CAUSE_REQ_FAC_NOTIMPL,	"REQ_FAC_NOTIMPL" },
+	{ GSM48_CC_CAUSE_RESTR_BCAP_AVAIL,	"RESTR_BCAP_AVAIL" },
+	{ GSM48_CC_CAUSE_SERV_OPT_UNIMPL,	"SERV_OPT_UNIMPL" },
+	{ GSM48_CC_CAUSE_INVAL_TRANS_ID,	"INVAL_TRANS_ID" },
+	{ GSM48_CC_CAUSE_USER_NOT_IN_CUG,	"USER_NOT_IN_CUG" },
+	{ GSM48_CC_CAUSE_INCOMPAT_DEST,		"INCOMPAT_DEST" },
+	{ GSM48_CC_CAUSE_INVAL_TRANS_NET,	"INVAL_TRANS_NET" },
+	{ GSM48_CC_CAUSE_SEMANTIC_INCORR,	"SEMANTIC_INCORR" },
+	{ GSM48_CC_CAUSE_INVAL_MAND_INF,	"INVAL_MAND_INF" },
+	{ GSM48_CC_CAUSE_MSGTYPE_NOTEXIST,	"MSGTYPE_NOTEXIST" },
+	{ GSM48_CC_CAUSE_MSGTYPE_INCOMPAT,	"MSGTYPE_INCOMPAT" },
+	{ GSM48_CC_CAUSE_IE_NOTEXIST,		"IE_NOTEXIST" },
+	{ GSM48_CC_CAUSE_COND_IE_ERR,		"COND_IE_ERR" },
+	{ GSM48_CC_CAUSE_MSG_INCOMP_STATE,	"MSG_INCOMP_STATE" },
+	{ GSM48_CC_CAUSE_RECOVERY_TIMER,	"RECOVERY_TIMER" },
+	{ GSM48_CC_CAUSE_PROTO_ERR,		"PROTO_ERR" },
+	{ GSM48_CC_CAUSE_INTERWORKING,		"INTERWORKING" },
+	{ 0 , NULL }
+};
+
 /*! TS 04.80, section 3.4 Messages for supplementary services control */
 const struct value_string gsm48_nc_ss_msgtype_names[] = {
 	OSMO_VALUE_STRING(GSM0480_MTYPE_RELEASE_COMPLETE),
@@ -1023,5 +1120,170 @@ const struct value_string gsm48_reject_value_names[] = {
 	 { GSM48_REJECT_MSC_TMP_NOT_REACHABLE, "MSC_TMP_NOT_REACHABLE" },
 	 { 0, NULL }
 };
+
+/*! Wrap a given \ref msg with \ref gsm48_hdr structure
+ * \param[out] msg      A message to be wrapped
+ * \param[in]  pdisc    GSM TS 04.07 protocol discriminator 1/2,
+ *                      sub-pdisc, trans_id or skip_ind 1/2,
+ *                      see section 11.2.3.1 for details
+ * \param[in]  msg_type GSM TS 04.08 message type
+ * @return              pointer to pushed header within \ref msg
+ */
+struct gsm48_hdr *gsm48_push_l3hdr(struct msgb *msg,
+				   uint8_t pdisc, uint8_t msg_type)
+{
+	struct gsm48_hdr *gh;
+
+	gh = (struct gsm48_hdr *) msgb_push(msg, sizeof(*gh));
+	gh->proto_discr = pdisc;
+	gh->msg_type = msg_type;
+
+	return gh;
+}
+
+const struct value_string osmo_lu_type_names[] = {
+	{ GSM48_LUPD_NORMAL, "NORMAL" },
+	{ GSM48_LUPD_PERIODIC, "PERIODIC" },
+	{ GSM48_LUPD_IMSI_ATT, "IMSI-ATTACH" },
+	{ GSM48_LUPD_RESERVED, "RESERVED" },
+	{}
+};
+
+const struct value_string osmo_cm_service_type_names[] = {
+	{ GSM48_CMSERV_MO_CALL_PACKET, "MO-Call" },
+	{ GSM48_CMSERV_EMERGENCY, "Emergency-Call" },
+	{ GSM48_CMSERV_SMS, "Short-Messaging-Service" },
+	{ GSM48_CMSERV_SUP_SERV, "Supplementary-Service" },
+	{ GSM48_CMSERV_VGCS, "Voice-Group-Call" },
+	{ GSM48_CMSERV_VBS, "Voice-Broadcast-Call" },
+	{ GSM48_CMSERV_LOC_SERV, "Location-Service" },
+	{}
+};
+
+bool osmo_gsm48_classmark1_is_r99(const struct gsm48_classmark1 *cm1)
+{
+	return cm1->rev_lev >= 2;
+}
+
+bool osmo_gsm48_classmark2_is_r99(const struct gsm48_classmark2 *cm2, uint8_t cm2_len)
+{
+	if (!cm2_len)
+		return false;
+	return cm2->rev_lev >= 2;
+}
+
+/*! Return true if any of Classmark 1 or Classmark 2 are present and indicate R99 capability.
+ * \param[in] cm  Classmarks.
+ * \returns True if R99 or later, false if pre-R99 or no Classmarks are present.
+ */
+bool osmo_gsm48_classmark_is_r99(const struct osmo_gsm48_classmark *cm)
+{
+	if (cm->classmark1_set)
+		return osmo_gsm48_classmark1_is_r99(&cm->classmark1);
+	return osmo_gsm48_classmark2_is_r99(&cm->classmark2, cm->classmark2_len);
+}
+
+/*! Return a string representation of A5 cipher algorithms indicated by Classmark 1, 2 and 3.
+ * \param[in] cm  Classmarks.
+ * \returns A statically allocated string like "cm1{a5/1=supported} cm2{0x23= A5/2 A5/3} no-cm3"
+ */
+const char *osmo_gsm48_classmark_a5_name(const struct osmo_gsm48_classmark *cm)
+{
+	static char buf[128];
+	char cm1[42] = "no-cm1";
+	char cm2[42] = " no-cm2";
+	char cm3[42] = " no-cm2";
+
+	if (cm->classmark1_set)
+		snprintf(cm1, sizeof(cm1), "cm1{a5/1=%s}",
+		     cm->classmark1.a5_1 ? "not-supported":"supported" /* inverted logic */);
+
+	if (cm->classmark2_len >= 3)
+		snprintf(cm2, sizeof(cm2), " cm2{0x%x=%s%s}",
+			 cm->classmark2.a5_2 + (cm->classmark2.a5_3 << 1),
+			 cm->classmark2.a5_2 ? " A5/2" : "",
+			 cm->classmark2.a5_3 ? " A5/3" : "");
+
+	if (cm->classmark3_len >= 1)
+		snprintf(cm3, sizeof(cm3), " cm3{0x%x=%s%s%s%s}",
+			 cm->classmark3[0],
+			 cm->classmark3[0] & (1 << 0) ? " A5/4" : "",
+			 cm->classmark3[0] & (1 << 1) ? " A5/5" : "",
+			 cm->classmark3[0] & (1 << 2) ? " A5/6" : "",
+			 cm->classmark3[0] & (1 << 3) ? " A5/7" : "");
+
+	snprintf(buf, sizeof(buf), "%s%s%s", cm1, cm2, cm3);
+	return buf;
+}
+
+/*! Overwrite dst with the Classmark information present in src.
+ * Add an new Classmark and overwrite in dst what src has to offer, but where src has no Classmark information, leave
+ * dst unchanged. (For Classmark 2 and 3, dst will exactly match any non-zero Classmark length from src, hence may end
+ * up with a shorter Classmark after this call.)
+ * \param[out] dst  The target Classmark storage to be updated.
+ * \param[in] src  The new Classmark information to read from.
+ */
+void osmo_gsm48_classmark_update(struct osmo_gsm48_classmark *dst, const struct osmo_gsm48_classmark *src)
+{
+	if (src->classmark1_set) {
+		dst->classmark1 = src->classmark1;
+		dst->classmark1_set = true;
+	}
+	if (src->classmark2_len) {
+		dst->classmark2_len = src->classmark2_len;
+		dst->classmark2 = src->classmark2;
+	}
+	if (src->classmark3_len) {
+		dst->classmark3_len = src->classmark3_len;
+		memcpy(dst->classmark3, src->classmark3, OSMO_MIN(sizeof(dst->classmark3), src->classmark3_len));
+	}
+}
+
+
+/*! Determine if the given Classmark (1/2/3) value permits a given A5/n cipher.
+ * \param[in] cm  Classmarks.
+ * \param[in] a5  The N in A5/N for which to query whether support is indicated.
+ * \return 1 when the given A5/n is permitted, 0 when not (or a5 > 7), and negative if the respective MS Classmark is
+ *         not known, where the negative number indicates the classmark type: -2 means Classmark 2 is not available. The
+ *         idea is that when e.g. A5/3 is requested and the corresponding Classmark 3 is not available, that the caller
+ *         can react by obtaining Classmark 3 and calling again once it is available.
+ */
+int osmo_gsm48_classmark_supports_a5(const struct osmo_gsm48_classmark *cm, uint8_t a5)
+{
+	switch (a5) {
+	case 0:
+		/* all phones must implement A5/0, see 3GPP TS 43.020 4.9 */
+		return 1;
+	case 1:
+		/* 3GPP TS 43.020 4.9 requires A5/1 to be suppored by all phones and actually states:
+		 * "The network shall not provide service to an MS which indicates that it does not
+		 *  support the ciphering algorithm A5/1.".  However, let's be more tolerant based
+		 * on policy here */
+		/* See 3GPP TS 24.008 10.5.1.7 */
+		if (!cm->classmark1_set)
+			return -1;
+		/* Inverted logic for this bit! */
+		return cm->classmark1.a5_1 ? 0 : 1;
+	case 2:
+		/* See 3GPP TS 24.008 10.5.1.6 */
+		if (cm->classmark2_len < 3)
+			return -2;
+		return cm->classmark2.a5_2 ? 1 : 0;
+	case 3:
+		if (cm->classmark2_len < 3)
+			return -2;
+		return cm->classmark2.a5_3 ? 1 : 0;
+	case 4:
+	case 5:
+	case 6:
+	case 7:
+		/* See 3GPP TS 24.008 10.5.1.7 */
+		if (!cm->classmark3_len)
+			return -3;
+		return (cm->classmark3[0] & (1 << (a5-4))) ? 1 : 0;
+	default:
+		return 0;
+	}
+}
 
 /*! @} */

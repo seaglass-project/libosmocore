@@ -98,15 +98,19 @@
 
 #include "../../config.h"
 
+#if (!EMBEDDED)
 /* FIXME: this can be removed once we bump glibc requirements to 2.25: */
-#if defined(__GLIBC__) && (__GLIBC__ >= 2) && (__GLIBC_MINOR__ >= 25)
+#if defined(__GLIBC_PREREQ) && __GLIBC_PREREQ(2,25)
+#pragma message ("glibc " OSMO_STRINGIFY_VAL(__GLIBC__) "." OSMO_STRINGIFY_VAL(__GLIBC_MINOR__) " random detected")
 #include <sys/random.h>
+#undef USE_GNUTLS
 #elif HAVE_DECL_SYS_GETRANDOM
 #include <sys/syscall.h>
 #ifndef GRND_NONBLOCK
 #define GRND_NONBLOCK 0x0001
-#endif
-#endif
+#endif /* ifndef GRND_NONBLOCK */
+#endif /* if __GLIBC_PREREQ */
+#endif /* !EMBEDDED */
 
 #if (USE_GNUTLS)
 #pragma message ("including GnuTLS for getrandom fallback.")
@@ -131,7 +135,8 @@ static void on_dso_unload_gnutls(void)
 	if (!gnutls_check_version("3.3.0"))
 		gnutls_global_deinit();
 }
-#endif
+
+#endif /* if (USE_GNUTLS) */
 
 /* ETSI GSM 03.38 6.2.1 and 6.2.1.1 default alphabet
  * Greek symbols at hex positions 0x10 and 0x12-0x1a
@@ -441,19 +446,19 @@ int osmo_get_rand_id(uint8_t *out, size_t len)
 	/* this function is intended for generating short identifiers only, not arbitrary-length random data */
 	if (len > OSMO_MAX_RAND_ID_LEN)
                return -E2BIG;
-
-#if defined(__GLIBC__) && (__GLIBC__ >= 2) && (__GLIBC_MINOR__ >= 25)
+#if (!EMBEDDED)
+#if defined(__GLIBC_PREREQ) && __GLIBC_PREREQ(2,25)
 	rc = getrandom(out, len, GRND_NONBLOCK);
 #elif HAVE_DECL_SYS_GETRANDOM
 #pragma message ("Using direct syscall access for getrandom(): consider upgrading to glibc >= 2.25")
 	/* FIXME: this can be removed once we bump glibc requirements to 2.25: */
 	rc = syscall(SYS_getrandom, out, len, GRND_NONBLOCK);
 #endif
+#endif /* !EMBEDDED */
 
 	/* getrandom() failed entirely: */
 	if (rc < 0) {
 #if (USE_GNUTLS)
-#pragma message ("Secure random failed: using GnuTLS fallback.")
 		return gnutls_rnd(GNUTLS_RND_RANDOM, out, len);
 #endif
 		return -errno;
@@ -706,36 +711,61 @@ enum gsm_band gsm_band_parse(const char* mhz)
 	}
 }
 
-/*! Resolve GSM band from ARFCN
+/*! Resolve GSM band from ARFCN.
  *  In Osmocom, we use the highest bit of the \a arfcn to indicate PCS
  *  \param[in] arfcn Osmocom ARFCN, highest bit determines PCS mode
- *  \returns GSM Band */
-enum gsm_band gsm_arfcn2band(uint16_t arfcn)
+ *  \param[out] band GSM Band containing \arfcn if arfcn is valid, undetermined otherwise
+ *  \returns 0 if arfcn is valid and \a band was set, negative on error */
+int gsm_arfcn2band_rc(uint16_t arfcn, enum gsm_band *band)
 {
 	int is_pcs = arfcn & ARFCN_PCS;
 
 	arfcn &= ~ARFCN_FLAG_MASK;
 
-	if (is_pcs)
-		return GSM_BAND_1900;
-	else if (arfcn <= 124)
-		return GSM_BAND_900;
-	else if (arfcn >= 955 && arfcn <= 1023)
-		return GSM_BAND_900;
-	else if (arfcn >= 128 && arfcn <= 251)
-		return GSM_BAND_850;
-	else if (arfcn >= 512 && arfcn <= 885)
-		return GSM_BAND_1800;
-	else if (arfcn >= 259 && arfcn <= 293)
-		return GSM_BAND_450;
-	else if (arfcn >= 306 && arfcn <= 340)
-		return GSM_BAND_480;
-	else if (arfcn >= 350 && arfcn <= 425)
-		return GSM_BAND_810;
-	else if (arfcn >= 438 && arfcn <= 511)
-		return GSM_BAND_750;
-	else
-		return GSM_BAND_1800;
+	if (is_pcs) {
+		*band = GSM_BAND_1900;
+		return 0;
+	} else if (arfcn <= 124) {
+		*band = GSM_BAND_900;
+		return 0;
+	} else if (arfcn >= 955 && arfcn <= 1023) {
+		*band = GSM_BAND_900;
+		return 0;
+	} else if (arfcn >= 128 && arfcn <= 251) {
+		*band = GSM_BAND_850;
+		return 0;
+	} else if (arfcn >= 512 && arfcn <= 885) {
+		*band = GSM_BAND_1800;
+		return 0;
+	} else if (arfcn >= 259 && arfcn <= 293) {
+		*band = GSM_BAND_450;
+		return 0;
+	} else if (arfcn >= 306 && arfcn <= 340) {
+		*band = GSM_BAND_480;
+		return 0;
+	} else if (arfcn >= 350 && arfcn <= 425) {
+		*band = GSM_BAND_810;
+		return 0;
+	} else if (arfcn >= 438 && arfcn <= 511) {
+		*band = GSM_BAND_750;
+		return 0;
+	}
+	return -1;
+}
+
+/*! Resolve GSM band from ARFCN, aborts process on invalid ARFCN.
+ *  In Osmocom, we use the highest bit of the \a arfcn to indicate PCS.
+ *  DEPRECATED: Use gsm_arfcn2band_rc instead.
+ *  \param[in] arfcn Osmocom ARFCN, highest bit determines PCS mode
+ *  \returns GSM Band if ARFCN is valid (part of any valid band), aborts otherwise */
+enum gsm_band gsm_arfcn2band(uint16_t arfcn)
+{
+	enum gsm_band band;
+	if (gsm_arfcn2band_rc(arfcn, &band) == 0)
+		return band;
+
+	osmo_panic("%s:%d Invalid arfcn %" PRIu16 " passed to gsm_arfcn2band\n",
+		   __FILE__, __LINE__, arfcn);
 }
 
 struct gsm_freq_range {
@@ -972,3 +1002,12 @@ int gsm_7bit_encode_oct(uint8_t *result, const char *data, int *octets)
 	return gsm_7bit_encode_n(result, GSM_7BIT_LEGACY_MAX_BUFFER_SIZE,
 				 data, octets);
 }
+
+/* This is also used by osmo-hlr's db schema */
+const struct value_string osmo_rat_type_names[] = {
+	{ OSMO_RAT_UNKNOWN, "unknown" },
+	{ OSMO_RAT_GERAN_A, "GERAN-A" },
+	{ OSMO_RAT_UTRAN_IU, "UTRAN-Iu" },
+	{ OSMO_RAT_EUTRAN_SGS, "EUTRAN-SGs" },
+	{}
+};

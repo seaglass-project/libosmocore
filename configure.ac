@@ -68,6 +68,10 @@ AC_SUBST(LIBRARY_DLSYM)
 AC_CHECK_LIB(execinfo, backtrace, BACKTRACE_LIB=-lexecinfo, BACKTRACE_LIB=)
 AC_SUBST(BACKTRACE_LIB)
 
+# check for old glibc < 2.17 to get clock_gettime
+AC_SEARCH_LIBS([clock_gettime], [rt posix4], [LIBRARY_RT="$LIBS";LIBS=""])
+AC_SUBST(LIBRARY_RT)
+
 AC_ARG_ENABLE(doxygen,
 	[AS_HELP_STRING(
 		[--disable-doxygen],
@@ -295,6 +299,21 @@ then
 	CFLAGS="$CFLAGS $WERROR_FLAGS"
 	CPPFLAGS="$CPPFLAGS $WERROR_FLAGS"
 fi
+
+AC_ARG_ENABLE([external_tests],
+		AC_HELP_STRING([--enable-external-tests],
+				[Include the VTY/CTRL tests in make check [default=no]]),
+		[enable_ext_tests="$enableval"],[enable_ext_tests="no"])
+if test "x$enable_ext_tests" = "xyes" ; then
+	AM_PATH_PYTHON
+	AC_CHECK_PROG(OSMOTESTEXT_CHECK,osmo_verify_transcript_vty.py,yes)
+	 if test "x$OSMOTESTEXT_CHECK" != "xyes" ; then
+		AC_MSG_ERROR([Please install git://osmocom.org/python/osmo-python-tests to run the VTY/CTRL tests.])
+	fi
+fi
+AC_MSG_CHECKING([whether to enable VTY/CTRL tests])
+AC_MSG_RESULT([$enable_ext_tests])
+AM_CONDITIONAL(ENABLE_EXT_TESTS, test "x$enable_ext_tests" = "xyes")
 
 CFLAGS="$CFLAGS -DBUILDING_LIBOSMOCORE -Wall"
 CPPFLAGS="$CPPFLAGS -DBUILDING_LIBOSMOCORE -Wall"

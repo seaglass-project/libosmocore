@@ -48,6 +48,32 @@
  *  \file gsm0808_utils.c
  */
 
+/*! Encode TS 08.08 AoIP Cause IE
+ *  \param[out] msg Message Buffer to which to append IE
+ *  \param[in] cause Cause code to be used in IE
+ *  \returns number of bytes added to \a msg */
+uint8_t gsm0808_enc_cause(struct msgb *msg, uint16_t cause)
+{
+	/* See also 3GPP TS 48.008 3.2.2.5 Cause */
+	uint8_t *old_tail;
+	bool extended;
+
+	old_tail = msg->tail;
+
+	extended = gsm0808_cause_ext(cause >> 8);
+
+	msgb_put_u8(msg, GSM0808_IE_CAUSE);
+	if (extended) {
+		msgb_put_u8(msg, 2);
+		msgb_put_u16(msg, cause);
+	} else {
+		msgb_put_u8(msg, 1);
+		msgb_put_u8(msg, (uint8_t) (cause & 0xFF));
+	}
+
+	return (uint8_t) (msg->tail - old_tail);
+}
+
 /*! Encode TS 08.08 AoIP transport address IE
  *  \param[out] msg Message Buffer to which to append IE
  *  \param[in] ss Socket Address to be used in IE
@@ -349,9 +375,6 @@ uint8_t gsm0808_enc_speech_codec_list(struct msgb *msg,
 	OSMO_ASSERT(msg);
 	OSMO_ASSERT(scl);
 
-	/* Empty list */
-	OSMO_ASSERT(scl->len >= 1);
-
 	msgb_put_u8(msg, GSM0808_IE_SPEECH_CODEC_LIST);
 	tlv_len = msgb_put(msg, 1);
 	old_tail = msg->tail;
@@ -384,8 +407,6 @@ int gsm0808_dec_speech_codec_list(struct gsm0808_speech_codec_list *scl,
 	OSMO_ASSERT(scl);
 	if (!elem)
 		return -EINVAL;
-	if (len == 0)
-		return -EINVAL;
 
 	memset(scl, 0, sizeof(*scl));
 
@@ -403,11 +424,6 @@ int gsm0808_dec_speech_codec_list(struct gsm0808_speech_codec_list *scl,
 	}
 
 	scl->len = decoded;
-
-	/* Empty list */
-	if (decoded < 1) {
-		return -EINVAL;
-	}
 
 	return (int)(elem - old_elem);
 }
@@ -490,6 +506,89 @@ int gsm0808_dec_channel_type(struct gsm0808_channel_type *ct,
 	ct->perm_spch_len = i + 1;
 
 	return (int)(elem - old_elem);
+}
+
+/*! Create BSSMAP Global Call Reference, 3GPP TS 48.008 §3.2.2.115.
+ *  \param[out] msg Message Buffer for appending IE
+ *  \param[in] g Global Call Reference, 3GPP TS 29.205 Table B 2.1.9.1
+ *  \returns number of bytes added to \a msg or 0 on error */
+static uint8_t gsm0808_enc_gcr(struct msgb *msg, const struct osmo_gcr_parsed *g)
+{
+	uint8_t enc, *len = msgb_tl_put(msg, GSM0808_IE_GLOBAL_CALL_REF);
+
+	enc = osmo_enc_gcr(msg, g);
+	if (!enc)
+		return 0;
+
+	*len = enc;
+	return enc + 2; /* type (1 byte) + length (1 byte) */
+}
+
+/*! Decode BSSMAP Global Call Reference, 3GPP TS 29.205 Table B 2.1.9.1.
+ *  \param[out] gcr Caller-provided memory to store Global Call Reference
+ *  \param[in] tp IE values to be decoded
+ *  \returns number of bytes parsed; negative on error */
+static int gsm0808_dec_gcr(struct osmo_gcr_parsed *gcr, const struct tlv_parsed *tp)
+{
+	int ret;
+	const uint8_t *buf = TLVP_VAL_MINLEN(tp, GSM0808_IE_GLOBAL_CALL_REF, OSMO_GCR_MIN_LEN);
+	if (!buf)
+		return -EINVAL;
+
+	ret = osmo_dec_gcr(gcr, buf, TLVP_LEN(tp, GSM0808_IE_GLOBAL_CALL_REF));
+	if (ret < 0)
+		return -ENOENT;
+
+	return 2 + ret;
+}
+
+/*! Add LCLS parameters to a given msgb, 3GPP TS 48.008 §3.2.2.115 - 3.2.2.120.
+ *  \param[out] msg Message Buffer for appending IE
+ *  \param[in] lcls LCLS-related data
+ *  \returns number of bytes added to \a msg or 0 on error */
+uint8_t gsm0808_enc_lcls(struct msgb *msg, const struct osmo_lcls *lcls)
+{
+	uint8_t enc = 0;
+
+	/* LCLS: §3.2.2.115 Global Call Reference */
+	if (lcls->gcr_available)
+		enc = gsm0808_enc_gcr(msg, &lcls->gcr);
+
+	/* LCLS: §3.2.2.116 Configuration */
+	if (lcls->config != GSM0808_LCLS_CFG_NA) {
+		msgb_tv_put(msg, GSM0808_IE_LCLS_CONFIG, lcls->config);
+		enc += 2;
+	}
+
+	/* LCLS: §3.2.2.117 Connection Status Control */
+	if (lcls->control != GSM0808_LCLS_CSC_NA) {
+		msgb_tv_put(msg, GSM0808_IE_LCLS_CONN_STATUS_CTRL, lcls->control);
+		enc += 2;
+	}
+
+	/* LCLS: §3.2.2.118 Correlation-Not-Needed */
+	if (!lcls->corr_needed) {
+		msgb_v_put(msg, GSM0808_IE_LCLS_CORR_NOT_NEEDED);
+		enc++;
+	}
+
+	return enc;
+}
+
+/*! Decode LCLS parameters to a given msgb, 3GPP TS 48.008 §3.2.2.115 - 3.2.2.120.
+ *  \param[out] lcls Caller-provided memory to store LCLS-related data
+ *  \param[in] tp IE values to be decoded
+ *  \returns GCR size or negative on error */
+int gsm0808_dec_lcls(struct osmo_lcls *lcls, const struct tlv_parsed *tp)
+{
+	int ret = gsm0808_dec_gcr(&lcls->gcr, tp);
+
+	lcls->gcr_available = (ret < 0) ? false : true;
+	lcls->config = tlvp_val8(tp, GSM0808_IE_LCLS_CONFIG, GSM0808_LCLS_CFG_NA);
+	lcls->control = tlvp_val8(tp, GSM0808_IE_LCLS_CONN_STATUS_CTRL, GSM0808_LCLS_CSC_NA);
+	lcls->corr_needed = TLVP_PRESENT(tp, GSM0808_IE_LCLS_CORR_NOT_NEEDED) ? false : true;
+
+	return ret;
 }
 
 /*! Encode TS 08.08 Encryption Information IE
@@ -1161,6 +1260,106 @@ int gsm0808_speech_codec_from_chan_type(struct gsm0808_speech_codec *sc,
 	return 0;
 }
 
+/*! Determine a set of AMR speech codec configuration bits (S0-S15) from a
+ *  given GSM 04.08 AMR configuration struct.
+ *  \param[in] cfg AMR configuration in GSM 04.08 format.
+ *  \param[in] hint if the resulting configuration shall be used with a FR or HR TCH.
+ *  \returns configuration bits (S0-S15) */
+uint16_t gsm0808_sc_cfg_from_gsm48_mr_cfg(const struct gsm48_multi_rate_conf *cfg,
+					  bool fr)
+{
+	uint16_t s15_s0 = 0;
+
+	/* Check each rate bit in the AMR multirate configuration and pick the
+	 * matching default configuration as specified in 3GPP TS 28.062,
+	 * Table 7.11.3.1.3-2. */
+	if (cfg->m4_75)
+		s15_s0 |= GSM0808_SC_CFG_DEFAULT_AMR_4_75;
+	if (cfg->m5_15)
+		s15_s0 |= GSM0808_SC_CFG_DEFAULT_AMR_5_15;
+	if (cfg->m5_90)
+		s15_s0 |= GSM0808_SC_CFG_DEFAULT_AMR_5_90;
+	if (cfg->m6_70)
+		s15_s0 |= GSM0808_SC_CFG_DEFAULT_AMR_6_70;
+	if (cfg->m7_40)
+		s15_s0 |= GSM0808_SC_CFG_DEFAULT_AMR_7_40;
+	if (cfg->m7_95)
+		s15_s0 |= GSM0808_SC_CFG_DEFAULT_AMR_7_95;
+	if (cfg->m10_2)
+		s15_s0 |= GSM0808_SC_CFG_DEFAULT_AMR_10_2;
+	if (cfg->m12_2)
+		s15_s0 |= GSM0808_SC_CFG_DEFAULT_AMR_12_2;
+
+	/* Note: 3GPP TS 48.008, chapter 3GPP TS 48.008 states that for AMR
+	 * some of the configuration bits must be coded as zeros. The applied
+	 * bitmask matches the default codec settings. See also the definition
+	 * of enum gsm0808_speech_codec_defaults in gsm_08_08.h and
+	 * 3GPP TS 28.062, Table 7.11.3.1.3-2. */
+	if (fr)
+		s15_s0 &= GSM0808_SC_CFG_DEFAULT_FR_AMR;
+	else
+		s15_s0 &= GSM0808_SC_CFG_DEFAULT_HR_AMR;
+
+	return s15_s0;
+}
+
+/*! Determine a GSM 04.08 AMR configuration struct from a set of speech codec
+ *  configuration bits (S0-S15)
+ *  \param[out] cfg AMR configuration in GSM 04.08 format.
+ *  \param[in] s15_s0 configuration bits (S0-S15). */
+void gsm48_mr_cfg_from_gsm0808_sc_cfg(struct gsm48_multi_rate_conf *cfg,
+				      uint16_t s15_s0)
+{
+	memset(cfg, 0, sizeof(*cfg));
+
+	/* Strip option bits */
+	s15_s0 &= 0x00ff;
+
+	/* Rate 5,15k must always be present */
+	cfg->m5_15 = 1;
+
+	if ((s15_s0 & GSM0808_SC_CFG_DEFAULT_AMR_4_75 & 0xff) ==
+	    (GSM0808_SC_CFG_DEFAULT_AMR_4_75 & 0xff))
+		cfg->m4_75 = 1;
+	if ((s15_s0 & GSM0808_SC_CFG_DEFAULT_AMR_5_90 & 0xff) ==
+	    (GSM0808_SC_CFG_DEFAULT_AMR_5_90 & 0xff))
+		cfg->m5_90 = 1;
+	if ((s15_s0 & GSM0808_SC_CFG_DEFAULT_AMR_6_70 & 0xff) ==
+	    (GSM0808_SC_CFG_DEFAULT_AMR_6_70 & 0xff))
+		cfg->m6_70 = 1;
+	if ((s15_s0 & GSM0808_SC_CFG_DEFAULT_AMR_7_40 & 0xff) ==
+	    (GSM0808_SC_CFG_DEFAULT_AMR_7_40 & 0xff))
+		cfg->m7_40 = 1;
+	if ((s15_s0 & GSM0808_SC_CFG_DEFAULT_AMR_7_95 & 0xff) ==
+	    (GSM0808_SC_CFG_DEFAULT_AMR_7_95 & 0xff))
+		cfg->m7_95 = 1;
+	if ((s15_s0 & GSM0808_SC_CFG_DEFAULT_AMR_10_2 & 0xff) ==
+	    (GSM0808_SC_CFG_DEFAULT_AMR_10_2 & 0xff))
+		cfg->m10_2 = 1;
+	if ((s15_s0 & GSM0808_SC_CFG_DEFAULT_AMR_12_2 & 0xff) ==
+	    (GSM0808_SC_CFG_DEFAULT_AMR_12_2 & 0xff))
+		cfg->m12_2 = 1;
+
+	cfg->ver = 1;
+	cfg->icmi = 1;
+}
+
+int gsm0808_get_cipher_reject_cause(const struct tlv_parsed *tp)
+{
+	const uint8_t *buf = TLVP_VAL_MINLEN(tp, GSM0808_IE_CAUSE, 1);
+
+	if (!buf)
+		return -EBADMSG;
+
+	if (TLVP_LEN(tp, GSM0808_IE_CAUSE) > 1) {
+		if (!gsm0808_cause_ext(buf[0]))
+			return -EINVAL;
+		return buf[1];
+	}
+
+	return buf[0];
+}
+
 /*! Print a human readable name of the cell identifier to the char buffer.
  * This is useful both for struct gsm0808_cell_id and struct gsm0808_cell_id_list2.
  * See also gsm0808_cell_id_name() and gsm0808_cell_id_list_name().
@@ -1190,6 +1389,151 @@ int gsm0808_cell_id_u_name(char *buf, size_t buflen,
 		 * Same for kinds we have no string representation of yet. */
 		return snprintf(buf, buflen, "%s", gsm0808_cell_id_discr_name(id_discr));
 	}
+}
+
+/* Store individual Cell Identifier information in a CGI, without clearing the remaining ones.
+ * This is useful to supplement one CGI with information from more than one Cell Identifier,
+ * which in turn is useful to match Cell Identifiers of differing kinds to each other.
+ * Before first invocation, clear the *dst struct externally, this function does only write those members
+ * that are present in parameter u.
+ */
+static void cell_id_to_cgi(struct osmo_cell_global_id *dst,
+			   enum CELL_IDENT discr, const union gsm0808_cell_id_u *u)
+{
+	switch (discr) {
+	case CELL_IDENT_WHOLE_GLOBAL:
+		*dst = u->global;
+		return;
+
+	case CELL_IDENT_LAC_AND_CI:
+		dst->lai.lac = u->lac_and_ci.lac;
+		dst->cell_identity = u->lac_and_ci.ci;
+		return;
+
+	case CELL_IDENT_CI:
+		dst->cell_identity = u->ci;
+		return;
+
+	case CELL_IDENT_LAI_AND_LAC:
+		dst->lai = u->lai_and_lac;
+		return;
+
+	case CELL_IDENT_LAC:
+		dst->lai.lac = u->lac;
+		return;
+
+	case CELL_IDENT_NO_CELL:
+	case CELL_IDENT_BSS:
+	case CELL_IDENT_UTRAN_PLMN_LAC_RNC:
+	case CELL_IDENT_UTRAN_RNC:
+	case CELL_IDENT_UTRAN_LAC_RNC:
+		/* No values to set. */
+		return;
+	}
+}
+
+/*! Return true if the common information between the two Cell Identifiers match.
+ * For example, if a LAC+CI is compared to LAC, return true if the LAC are the same.
+ * Note that CELL_IDENT_NO_CELL will always return false.
+ * Also CELL_IDENT_BSS will always return false, since this function cannot possibly
+ * know the bounds of the BSS, so the caller must handle CELL_IDENT_BSS specially.
+ * \param[in] discr1  Cell Identifier type.
+ * \param[in] u1  Cell Identifier value.
+ * \param[in] discr2  Other Cell Identifier type.
+ * \param[in] u2  Other Cell Identifier value.
+ * \param[in] exact_match  If true, return true only if the CELL_IDENT types and all values are identical.
+ * \returns True if the common fields of the above match.
+ */
+static bool gsm0808_cell_id_u_match(enum CELL_IDENT discr1, const union gsm0808_cell_id_u *u1,
+				    enum CELL_IDENT discr2, const union gsm0808_cell_id_u *u2,
+				    bool exact_match)
+{
+	struct osmo_cell_global_id a = {};
+	struct osmo_cell_global_id b = {};
+
+	if (exact_match && discr1 != discr2)
+		return false;
+
+	/* First handle the odd wildcard like CELL_IDENT kinds. We can't really match any of these. */
+	switch (discr1) {
+	case CELL_IDENT_NO_CELL:
+	case CELL_IDENT_BSS:
+		return discr1 == discr2;
+	case CELL_IDENT_UTRAN_PLMN_LAC_RNC:
+	case CELL_IDENT_UTRAN_RNC:
+	case CELL_IDENT_UTRAN_LAC_RNC:
+		return false;
+	default:
+		break;
+	}
+	switch (discr2) {
+	case CELL_IDENT_NO_CELL:
+	case CELL_IDENT_UTRAN_PLMN_LAC_RNC:
+	case CELL_IDENT_UTRAN_RNC:
+	case CELL_IDENT_UTRAN_LAC_RNC:
+	case CELL_IDENT_BSS:
+		return false;
+	default:
+		break;
+	}
+
+	/* Enrich both sides to full CGI, then compare those. First set the *other* ID's values in case
+	 * they assign more items. For example:
+	 * u1 = LAC:42
+	 * u2 = LAC+CI:23+5
+	 * 1) a <- LAC+CI:23+5
+	 * 2) a <- LAC:42 so that a = LAC+CI:42+5
+	 * Now we can compare those two and find a mismatch. If the LAC were the same, we would get
+	 * identical LAC+CI and hence a match. */
+
+	cell_id_to_cgi(&a, discr2, u2);
+	cell_id_to_cgi(&a, discr1, u1);
+
+	cell_id_to_cgi(&b, discr1, u1);
+	cell_id_to_cgi(&b, discr2, u2);
+
+	return osmo_cgi_cmp(&a, &b) == 0;
+}
+
+/*! Return true if the common information between the two Cell Identifiers match.
+ * For example, if a LAC+CI is compared to LAC, return true if the LAC are the same.
+ * Note that CELL_IDENT_NO_CELL will always return false.
+ * Also CELL_IDENT_BSS will always return false, since this function cannot possibly
+ * know the bounds of the BSS, so the caller must handle CELL_IDENT_BSS specially.
+ * \param[in] id1  Cell Identifier.
+ * \param[in] id2  Other Cell Identifier.
+ * \param[in] exact_match  If true, return true only if the CELL_IDENT types and all values are identical.
+ * \returns True if the common fields of the above match.
+ */
+bool gsm0808_cell_ids_match(const struct gsm0808_cell_id *id1, const struct gsm0808_cell_id *id2, bool exact_match)
+{
+	return gsm0808_cell_id_u_match(id1->id_discr, &id1->id, id2->id_discr, &id2->id, exact_match);
+}
+
+/*! Find an index in a Cell Identifier list that matches a given single Cell Identifer.
+ * Compare \a id against each entry in \a list using gsm0808_cell_ids_match(), and return the list index
+ * if a match is found. \a match_nr allows iterating all matches in the list. A match_nr <= 0 returns the
+ * first match in the list, match_nr == 1 the second match, etc., and if match_nr exceeds the available
+ * matches in the list, -1 is returned.
+ * \param[in] id  Cell Identifier to match.
+ * \param[in] list  Cell Identifier list to search in.
+ * \param[in] match_nr  Ignore this many matches.
+ * \param[in] exact_match  If true, consider as match only if the CELL_IDENT types and all values are identical.
+ * \returns -1 if no match is found, list index if a match is found.
+ */
+int gsm0808_cell_id_matches_list(const struct gsm0808_cell_id *id, const struct gsm0808_cell_id_list2 *list,
+				 unsigned int match_nr, bool exact_match)
+{
+	int i;
+	for (i = 0; i < list->id_list_len; i++) {
+		if (gsm0808_cell_id_u_match(id->id_discr, &id->id, list->id_discr, &list->id_list[i], exact_match)) {
+			if (match_nr)
+				match_nr--;
+			else
+				return i;
+		}
+	}
+	return -1;
 }
 
 /*! value_string[] for enum CELL_IDENT. */

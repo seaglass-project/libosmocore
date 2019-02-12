@@ -161,7 +161,8 @@ static inline int rach_max_trans_raw2val(int raw) {
 #define	ARFCN_UPLINK	0x4000
 #define	ARFCN_FLAG_MASK	0xf000	/* Reserve the upper 5 bits for flags */
 
-enum gsm_band gsm_arfcn2band(uint16_t arfcn);
+int gsm_arfcn2band_rc(uint16_t arfcn, enum gsm_band *band);
+enum gsm_band gsm_arfcn2band(uint16_t arfcn) OSMO_DEPRECATED("Use gsm_arfcn2band_rc() instead");
 
 /* Convert an ARFCN to the frequency in MHz * 10 */
 uint16_t gsm_arfcn2freq10(uint16_t arfcn, int uplink);
@@ -228,6 +229,8 @@ enum gsm_chan_t {
 };
 
 extern const struct value_string gsm_chan_t_names[];
+static inline const char *gsm_chan_t_name(enum gsm48_chan_mode val)
+{ return get_value_string(gsm_chan_t_names, val); }
 
 /* Deprectated functions */
 /* Limit encoding and decoding to use no more than this amount of buffer bytes */
@@ -238,3 +241,17 @@ int gsm_7bit_decode_ussd(char *decoded, const uint8_t *user_data, uint8_t length
 int gsm_7bit_encode(uint8_t *result, const char *data) OSMO_DEPRECATED("Use gsm_7bit_encode_n() instead");
 int gsm_7bit_encode_ussd(uint8_t *result, const char *data, int *octets_written) OSMO_DEPRECATED("Use gsm_7bit_encode_n_ussd() instead");
 int gsm_7bit_encode_oct(uint8_t *result, const char *data, int *octets_written) OSMO_DEPRECATED("Use gsm_7bit_encode_n() instead");
+
+enum osmo_rat_type {
+	OSMO_RAT_UNKNOWN = 0,
+	OSMO_RAT_GERAN_A,
+	OSMO_RAT_UTRAN_IU,
+	OSMO_RAT_EUTRAN_SGS,
+
+	/* keep this last */
+	OSMO_RAT_COUNT
+};
+
+extern const struct value_string osmo_rat_type_names[];
+inline static const char *osmo_rat_type_name(enum osmo_rat_type val)
+{ return get_value_string(osmo_rat_type_names, val); }

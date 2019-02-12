@@ -324,6 +324,18 @@ static inline uint8_t *msgb_v_put(struct msgb *msg, uint8_t val)
 	return v_put(buf, val);
 }
 
+/*! put (append) a TL fields to a \ref msgb
+ *  \returns pointer to the length field so it can be updated after adding new information under specified tag */
+static inline uint8_t *msgb_tl_put(struct msgb *msg, uint8_t tag)
+{
+	uint8_t *len = msgb_v_put(msg, tag);
+
+	/* reserve space for length, len points to this reserved space already */
+	msgb_v_put(msg, 0);
+
+	return len;
+}
+
 /*! put (append) a TV16 field to a \ref msgb
  *  \returns pointer to first byte after newly-put information */
 static inline uint8_t *msgb_tv16_put(struct msgb *msg, uint8_t tag, uint16_t val)
@@ -339,6 +351,12 @@ static inline uint8_t *msgb_tlv_push(struct msgb *msg, uint8_t tag, uint8_t len,
 	uint8_t *buf = msgb_push(msg, TLV_GROSS_LEN(len));
 	tlv_put(buf, tag, len, val);
 	return buf;
+}
+
+/*! push 1-byte tagged value */
+static inline uint8_t *msgb_tlv1_push(struct msgb *msg, uint8_t tag, uint8_t val)
+{
+	return msgb_tlv_push(msg, tag, 1, &val);
 }
 
 /*! push (prepend) a TV field to a \ref msgb
@@ -471,11 +489,27 @@ void tlv_def_patch(struct tlv_definition *dst, const struct tlv_definition *src)
  * \param[in] _tp  pointer to \ref tlv_parsed.
  * \param[in] tag  IE tag to return.
  * \param[in] min_len  Minimum value length in bytes.
- * \returns struct tlv_p_entry pointer, or NULL if not present or too short.
+ * \returns const uint8_t pointer to value, or NULL if not present or too short.
  */
 #define TLVP_VAL_MINLEN(_tp, tag, min_len) \
 	(TLVP_PRES_LEN(_tp, tag, min_len)? (_tp)->lv[tag].val : NULL)
 
+
+/*! Obtain 1-byte TLV element.
+ *  \param[in] tp pointer to \ref tlv_parsed
+ *  \param[in] tag the Tag to look for
+ *  \param[in] default_val default value to use if tag not available
+ *  \returns the 1st byte of value with a given tag or default_val if tag was not found
+ */
+static inline uint8_t tlvp_val8(const struct tlv_parsed *tp, uint8_t tag, uint8_t default_val)
+{
+	const uint8_t *res = TLVP_VAL_MINLEN(tp, tag, 1);
+
+	if (res)
+		return res[0];
+
+	return default_val;
+}
 
 /*! Align given TLV element with 16 bit value to an even address
  *  \param[in] tp pointer to \ref tlv_parsed

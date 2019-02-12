@@ -380,6 +380,7 @@ static char *cmd_desc_str(const char **string)
 static vector cmd_make_descvec(const char *string, const char *descstr)
 {
 	int multiple = 0;
+	int optional_brace = 0;
 	const char *sp;
 	char *token;
 	int len;
@@ -401,6 +402,12 @@ static vector cmd_make_descvec(const char *string, const char *descstr)
 		while (isspace((int)*cp) && *cp != '\0')
 			cp++;
 
+		/* Explicitly detect optional multi-choice braces like [(one|two)]. */
+		if (cp[0] == '[' && cp[1] == '(') {
+			optional_brace = 1;
+			cp++;
+		}
+
 		if (*cp == '(') {
 			multiple = 1;
 			cp++;
@@ -408,6 +415,9 @@ static vector cmd_make_descvec(const char *string, const char *descstr)
 		if (*cp == ')') {
 			multiple = 0;
 			cp++;
+			if (*cp == ']')
+				cp++;
+			optional_brace = 0;
 		}
 		if (*cp == '|') {
 			OSMO_ASSERT(multiple);
@@ -434,9 +444,17 @@ static vector cmd_make_descvec(const char *string, const char *descstr)
 
 		len = cp - sp;
 
-		token = _talloc_zero(tall_vty_cmd_ctx, len + 1, "cmd_make_descvec");
-		memcpy(token, sp, len);
-		*(token + len) = '\0';
+		token = _talloc_zero(tall_vty_cmd_ctx, len + (optional_brace? 2 : 0) + 1, "cmd_make_descvec");
+		if (optional_brace) {
+			/* Place each individual multi-choice token in its own square braces */
+			token[0] = '[';
+			memcpy(token + 1, sp, len);
+			token[1 + len] = ']';
+			token[2 + len] = '\0';
+		} else {
+			memcpy(token, sp, len);
+			*(token + len) = '\0';
+		}
 
 		desc = talloc_zero(tall_vty_cmd_ctx, struct desc);
 		desc->cmd = token;
@@ -467,7 +485,7 @@ static int cmd_cmdsize(vector strvec)
 
 	for (i = 0; i < vector_active(strvec); i++)
 		if ((descvec = vector_slot(strvec, i)) != NULL) {
-			if ((vector_active(descvec)) == 1
+			if ((vector_active(descvec)) >= 1
 			    && (desc = vector_slot(descvec, 0)) != NULL) {
 				if (desc->cmd == NULL || CMD_OPTION(desc->cmd))
 					return size;
@@ -514,7 +532,7 @@ char *osmo_asciidoc_escape(const char *inp)
 		}
 	}
 
-	out = talloc_size(NULL, len + 1);
+	out = talloc_size(tall_vty_cmd_ctx, len + 1);
 	if (!out)
 		return NULL;
 
@@ -574,7 +592,7 @@ static char *xml_escape(const char *inp)
 		}
 	}
 
-	out = talloc_size(NULL, len + 1);
+	out = talloc_size(tall_vty_cmd_ctx, len + 1);
 	if (!out)
 		return NULL;
 
@@ -679,7 +697,7 @@ static int vty_dump_nodes(struct vty *vty)
 			elem = vector_slot(cnode->cmd_vector, j);
 			if (!vty_command_is_common(elem))
 				continue;
-			if (!elem->attr & CMD_ATTR_DEPRECATED)
+			if (!(elem->attr & (CMD_ATTR_DEPRECATED | CMD_ATTR_HIDDEN)))
 				vty_dump_element(elem, vty);
 		}
 	}
@@ -717,7 +735,7 @@ static int vty_dump_nodes(struct vty *vty)
 			elem = vector_slot(cnode->cmd_vector, j);
 			if (vty_command_is_common(elem))
 				continue;
-			if (!elem->attr & CMD_ATTR_DEPRECATED)
+			if (!(elem->attr & (CMD_ATTR_DEPRECATED | CMD_ATTR_HIDDEN)))
 				vty_dump_element(elem, vty);
 		}
 
@@ -1304,25 +1322,17 @@ static int cmd_range_match(const char *range, const char *str)
 }
 
 /* helper to retrieve the 'real' argument string from an optional argument */
-static char *
-cmd_deopt(const char *str)
+static char *cmd_deopt(void *ctx, const char *str)
 {
 	/* we've got "[blah]". We want to strip off the []s and redo the
 	 * match check for "blah"
 	 */
 	size_t len = strlen(str);
-	char *tmp;
 
 	if (len < 3)
 		return NULL;
 
-	/* tmp will hold a string of len-2 chars, so 'len' size is fine */
-	tmp = talloc_size(NULL, len);
-
-	memcpy(tmp, (str + 1), len - 2);
-	tmp[len - 2] = '\0';
-
-	return tmp;
+	return talloc_strndup(ctx, str + 1, len - 2);
 }
 
 static enum match_type
@@ -1333,7 +1343,7 @@ cmd_match(const char *str, const char *command,
 	if (recur && CMD_OPTION(str))
 	{
 		enum match_type ret;
-		char *tmp = cmd_deopt(str);
+		char *tmp = cmd_deopt(tall_vty_cmd_ctx, str);
 
 		/* this would be a bug in a command, however handle it gracefully
 		 * as it we only discover it if a user tries to run it
@@ -1482,12 +1492,23 @@ cmd_filter(char *command, vector v, unsigned int index, enum match_type level)
 static int
 is_cmd_ambiguous(char *command, vector v, int index, enum match_type type)
 {
+	int ret = 0;
 	unsigned int i;
 	unsigned int j;
 	struct cmd_element *cmd_element;
 	const char *matched = NULL;
 	vector descvec;
 	struct desc *desc;
+
+	/* In this loop, when a match is found, 'matched' points to it. If on a later iteration, an
+	 * identical match is found, the command is ambiguous. The trickiness is that a string may be
+	 * enclosed in '[str]' square brackets, which get removed by a talloc_strndup(), via cmd_deopt().
+	 * Such a string is usually needed for one loop iteration, except when 'matched' points to it. In
+	 * that case, the string must remain allocated until this function exits or another match comes
+	 * around. This is sufficiently confusing to justify a separate talloc tree to store all of the
+	 * odd allocations, and to free them all at the end. We are not expecting too many optional args
+	 * or ambiguities to cause a noticeable memory footprint from keeping all allocations. */
+	void *cmd_deopt_ctx = NULL;
 
 	for (i = 0; i < vector_active(v); i++)
 		if ((cmd_element = vector_slot(v, i)) != NULL) {
@@ -1500,9 +1521,15 @@ is_cmd_ambiguous(char *command, vector v, int index, enum match_type type)
 					enum match_type ret;
 					const char *str = desc->cmd;
 
-					if (CMD_OPTION(str))
-						if ((str = cmd_deopt(str)) == NULL)
+					if (CMD_OPTION(str)) {
+						if (!cmd_deopt_ctx)
+							cmd_deopt_ctx =
+								talloc_named_const(tall_vty_cmd_ctx, 0,
+										   __func__);
+						str = cmd_deopt(cmd_deopt_ctx, str);
+						if (str == NULL)
 							continue;
+					}
 
 					switch (type) {
 					case exact_match:
@@ -1516,9 +1543,10 @@ is_cmd_ambiguous(char *command, vector v, int index, enum match_type type)
 						{
 							if (matched
 							    && strcmp(matched,
-								      str) != 0)
-								return 1;	/* There is ambiguous match. */
-							else
+								      str) != 0) {
+								ret = 1; /* There is ambiguous match. */
+								goto free_and_return;
+							} else
 								matched = str;
 							match++;
 						}
@@ -1528,9 +1556,10 @@ is_cmd_ambiguous(char *command, vector v, int index, enum match_type type)
 						    (str, command)) {
 							if (matched
 							    && strcmp(matched,
-								      str) != 0)
-								return 1;
-							else
+								      str) != 0) {
+								ret = 1;
+								goto free_and_return;
+							} else
 								matched = str;
 							match++;
 						}
@@ -1544,8 +1573,10 @@ is_cmd_ambiguous(char *command, vector v, int index, enum match_type type)
 						if ((ret =
 						     cmd_ipv6_prefix_match
 						     (command)) != no_match) {
-							if (ret == partly_match)
-								return 2;	/* There is incomplete match. */
+							if (ret == partly_match) {
+								ret = 2;	/* There is incomplete match. */
+								goto free_and_return;
+							}
 
 							match++;
 						}
@@ -1559,8 +1590,10 @@ is_cmd_ambiguous(char *command, vector v, int index, enum match_type type)
 						if ((ret =
 						     cmd_ipv4_prefix_match
 						     (command)) != no_match) {
-							if (ret == partly_match)
-								return 2;	/* There is incomplete match. */
+							if (ret == partly_match) {
+								ret = 2;	/* There is incomplete match. */
+								goto free_and_return;
+							}
 
 							match++;
 						}
@@ -1573,14 +1606,15 @@ is_cmd_ambiguous(char *command, vector v, int index, enum match_type type)
 					default:
 						break;
 					}
-
-					if (CMD_OPTION(desc->cmd))
-						talloc_free((void*)str);
 				}
 			if (!match)
 				vector_slot(v, i) = NULL;
 		}
-	return 0;
+
+free_and_return:
+	if (cmd_deopt_ctx)
+		talloc_free(cmd_deopt_ctx);
+	return ret;
 }
 
 /* If src matches dst return dst string, otherwise return NULL */
@@ -1976,9 +2010,18 @@ static char **cmd_complete_command_real(vector vline, struct vty *vty,
 				descvec = vector_slot(strvec, index);
 				for (j = 0; j < vector_active(descvec); j++)
 					if ((desc = vector_slot(descvec, j))) {
-						if ((string = cmd_entry_function(vector_slot(vline, index), desc->cmd)))
+						const char *cmd = desc->cmd;
+						char *tmp = NULL;
+
+						if (CMD_OPTION(desc->cmd)) {
+							tmp = cmd_deopt(tall_vty_cmd_ctx, desc->cmd);
+							cmd = tmp;
+						}
+						if ((string = cmd_entry_function(vector_slot(vline, index), cmd)))
 							if (cmd_unique_string (matchvec, string))
 								vector_set (matchvec, talloc_strdup(tall_vty_cmd_ctx, string));
+						if (tmp)
+							talloc_free(tmp);
 					}
 			}
 		}
@@ -2712,8 +2755,7 @@ gDEFUN(config_list, config_list_cmd, "list", "Print command list\n")
 
 	for (i = 0; i < vector_active(cnode->cmd_vector); i++)
 		if ((cmd = vector_slot(cnode->cmd_vector, i)) != NULL
-		    && !(cmd->attr == CMD_ATTR_DEPRECATED
-			 || cmd->attr == CMD_ATTR_HIDDEN))
+		    && !(cmd->attr & (CMD_ATTR_DEPRECATED | CMD_ATTR_HIDDEN)))
 			vty_out(vty, "  %s%s", cmd->string, VTY_NEWLINE);
 	return CMD_SUCCESS;
 }

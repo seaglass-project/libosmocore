@@ -4,6 +4,8 @@
 
 #include <stdbool.h>
 
+#include <osmocom/core/msgb.h>
+
 #include <osmocom/gsm/tlv.h>
 #include <osmocom/gsm/protocol/gsm_04_08.h>
 #include <osmocom/gsm/gsm48_ie.h>
@@ -43,6 +45,7 @@ void gsm48_generate_lai(struct gsm48_loc_area_id *lai48, uint16_t mcc,
 	OSMO_DEPRECATED("Use gsm48_generate_lai2() instead, to not lose leading zeros in the MNC");
 void gsm48_generate_lai2(struct gsm48_loc_area_id *lai48, const struct osmo_location_area_id *lai);
 
+#define GSM48_MID_MAX_SIZE	11
 int gsm48_generate_mid_from_tmsi(uint8_t *buf, uint32_t tmsi);
 int gsm48_generate_mid_from_imsi(uint8_t *buf, const char *imsi);
 uint8_t gsm48_generate_mid(uint8_t *buf, const char *id, uint8_t mi_type);
@@ -51,6 +54,7 @@ uint8_t gsm48_generate_mid(uint8_t *buf, const char *id, uint8_t mi_type);
 int gsm48_mi_to_string(char *string, const int str_len,
 			const uint8_t *mi, const int mi_len);
 const char *gsm48_mi_type_name(uint8_t mi);
+const char *osmo_mi_name(const uint8_t *mi, uint8_t mi_len);
 
 /* Parse Routeing Area Identifier */
 void gsm48_parse_ra(struct gprs_ra_id *raid, const uint8_t *buf);
@@ -63,3 +67,9 @@ void gsm48_mcc_mnc_to_bcd(uint8_t *bcd_dst, uint16_t mcc, uint16_t mnc)
 	OSMO_DEPRECATED("Use osmo_plmn_to_bcd() instead, to not lose leading zeros in the MNC");
 void gsm48_mcc_mnc_from_bcd(uint8_t *bcd_src, uint16_t *mcc, uint16_t *mnc)
 	OSMO_DEPRECATED("Use osmo_plmn_from_bcd() instead, to not lose leading zeros in the MNC");
+
+struct gsm48_hdr *gsm48_push_l3hdr(struct msgb *msg,
+				   uint8_t pdisc, uint8_t msg_type);
+
+#define gsm48_push_l3hdr_tid(msg, pdisc, tid, msg_type) \
+	gsm48_push_l3hdr(msg, (pdisc & 0x0f) | (tid << 4), msg_type)

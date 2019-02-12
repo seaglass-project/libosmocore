@@ -156,7 +156,7 @@ int ctrl_cmd_send_trap(struct ctrl_handle *ctrl, const char *name, char *value)
 	if (!cmd)
 		return -ENOMEM;
 
-	cmd->id = "0"; /* It's a TRAP! */
+	cmd->id = CTRL_CMD_TRAP_ID; /* It's a TRAP! */
 	cmd->variable = (char *) name;
 	cmd->reply = value;
 	r = ctrl_cmd_send_to_all(ctrl, cmd);
@@ -360,7 +360,7 @@ static int handle_control_read(struct osmo_fd * bfd)
 		 * nothing left to do now. */
 		return 0;
 	} else if (ret < 0) {
-		LOGP(DLCTRL, LOGL_ERROR, "Failed to parse ip access message: %d\n", ret);
+		LOGP(DLCTRL, LOGL_ERROR, "Failed to parse ip access message: %d (%s)\n", ret, strerror(-ret));
 		return 0;
 	}
 
@@ -384,30 +384,55 @@ close_fd:
 int ctrl_handle_msg(struct ctrl_handle *ctrl, struct ctrl_connection *ccon, struct msgb *msg)
 {
 	struct ctrl_cmd *cmd;
+	bool parse_failed;
 	struct ipaccess_head *iph;
 	struct ipaccess_head_ext *iph_ext;
 	int result;
 
+	if (msg->len < sizeof(*iph)) {
+		LOGP(DLCTRL, LOGL_ERROR, "The message is too short.\n");
+		return -EINVAL;
+	}
+	iph = (struct ipaccess_head *) msg->data;
+	if (iph->proto == IPAC_PROTO_IPACCESS) {
+		uint8_t msg_type = *(msg->l2h);
+		switch (msg_type) {
+		case IPAC_MSGT_PING:
+			if (ipa_ccm_send_pong(ccon->write_queue.bfd.fd) < 0)
+				LOGP(DLINP, LOGL_ERROR, "Cannot send PONG message. Reason: %s\n", strerror(errno));
+			break;
+		case IPAC_MSGT_PONG:
+			break;
+		case IPAC_MSGT_ID_ACK:
+			if (ipa_ccm_send_id_ack(ccon->write_queue.bfd.fd) < 0)
+				LOGP(DLINP, LOGL_ERROR, "Cannot send ID_ACK message. Reason: %s\n", strerror(errno));
+			break;
+		default:
+			LOGP(DLCTRL, LOGL_DEBUG, "Received unhandled IPACCESS protocol message of type 0x%x: %s\n",
+			     msg_type, msgb_hexdump(msg));
+			break;
+		}
+		return 0;
+	}
+	if (iph->proto != IPAC_PROTO_OSMO) {
+		LOGP(DLCTRL, LOGL_ERROR, "Protocol mismatch. Received protocol 0x%x message: %s\n",
+		     iph->proto, msgb_hexdump(msg));
+		return -EINVAL;
+	}
 	if (msg->len < sizeof(*iph) + sizeof(*iph_ext)) {
 		LOGP(DLCTRL, LOGL_ERROR, "The message is too short.\n");
 		return -EINVAL;
 	}
-
-	iph = (struct ipaccess_head *) msg->data;
-	if (iph->proto != IPAC_PROTO_OSMO) {
-		LOGP(DLCTRL, LOGL_ERROR, "Protocol mismatch. We got 0x%x\n", iph->proto);
-		return -EINVAL;
-	}
-
 	iph_ext = (struct ipaccess_head_ext *) iph->data;
 	if (iph_ext->proto != IPAC_PROTO_EXT_CTRL) {
-		LOGP(DLCTRL, LOGL_ERROR, "Extended protocol mismatch. We got 0x%x\n", iph_ext->proto);
+		LOGP(DLCTRL, LOGL_ERROR, "Extended protocol mismatch. Received protocol 0x%x message: %s\n",
+		     iph_ext->proto, msgb_hexdump(msg));
 		return -EINVAL;
 	}
 
 	msg->l2h = iph_ext->data;
 
-	cmd = ctrl_cmd_parse2(ccon, msg);
+	cmd = ctrl_cmd_parse3(ccon, msg, &parse_failed);
 
 	if (!cmd) {
 		/* should never happen */
@@ -421,7 +446,7 @@ int ctrl_handle_msg(struct ctrl_handle *ctrl, struct ctrl_connection *ccon, stru
 	}
 
 	/* In case of error, reply with the error message right away. */
-	if (cmd->type == CTRL_TYPE_ERROR)
+	if (cmd->type == CTRL_TYPE_ERROR && parse_failed)
 		goto send_reply;
 
 	cmd->ccon = ccon;

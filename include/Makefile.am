@@ -47,6 +47,7 @@ nobase_include_HEADERS = \
                        osmocom/core/statistics.h \
                        osmocom/core/strrb.h \
                        osmocom/core/talloc.h \
+                       osmocom/core/tdef.h \
                        osmocom/core/timer.h \
                        osmocom/core/timer_compat.h \
                        osmocom/core/utils.h \
@@ -86,12 +87,17 @@ nobase_include_HEADERS = \
                        osmocom/coding/gsm0503_interleaving.h \
                        osmocom/coding/gsm0503_coding.h \
                        osmocom/gsm/gsm0808.h \
+                       osmocom/gsm/gsm29205.h \
                        osmocom/gsm/gsm0808_utils.h \
                        osmocom/gsm/gsm23003.h \
+                       osmocom/gsm/gsm29118.h \
                        osmocom/gsm/gsm48.h \
+                       osmocom/gsm/gsm48_arfcn_range_encode.h \
                        osmocom/gsm/gsm48_ie.h \
+                       osmocom/gsm/gsm48_rest_octets.h \
                        osmocom/gsm/gsm_utils.h \
                        osmocom/gsm/gsup.h \
+                       osmocom/gsm/gsup_sms.h \
                        osmocom/gsm/ipa.h \
                        osmocom/gsm/lapd_core.h \
                        osmocom/gsm/lapdm.h \
@@ -100,6 +106,7 @@ nobase_include_HEADERS = \
                        osmocom/gsm/prim.h \
                        osmocom/gsm/l1sap.h \
                        osmocom/gsm/oap.h \
+                       osmocom/gsm/oap_client.h \
                        osmocom/gsm/protocol/gsm_03_40.h \
                        osmocom/gsm/protocol/gsm_03_41.h \
                        osmocom/gsm/protocol/gsm_04_08.h \
@@ -113,6 +120,7 @@ nobase_include_HEADERS = \
                        osmocom/gsm/protocol/gsm_09_02.h \
                        osmocom/gsm/protocol/gsm_12_21.h \
 		       osmocom/gsm/protocol/gsm_23_003.h \
+		       osmocom/gsm/protocol/gsm_29_118.h \
                        osmocom/gsm/protocol/gsm_44_318.h \
                        osmocom/gsm/protocol/ipaccess.h \
                        osmocom/gsm/protocol/smpp34_osmocom.h \
@@ -147,11 +155,15 @@ nobase_include_HEADERS += \
                           osmocom/vty/vector.h \
                           osmocom/vty/vty.h \
                           osmocom/vty/ports.h \
+                          osmocom/vty/tdef_vty.h \
                           osmocom/ctrl/control_vty.h
 endif
 
 noinst_HEADERS = \
-	osmocom/gsm/kasumi.h osmocom/gsm/gea.h
+	osmocom/gsm/kasumi.h \
+	osmocom/gsm/gea.h \
+	osmocom/core/logging_internal.h \
+	$(NULL)
 
 osmocom/core/bit%gen.h: osmocom/core/bitXXgen.h.tpl
 	$(AM_V_GEN)$(MKDIR_P) $(dir $@)

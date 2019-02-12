@@ -67,7 +67,7 @@ static struct osmo_fd server_socket = {
 /*! Initialize telnet based VTY interface listening to 127.0.0.1
  *  \param[in] tall_ctx \ref talloc context
  *  \param[in] priv private data to be passed to callback
- *  \param[in] port UDP port number
+ *  \param[in] port TCP port number to bind to
  */
 int telnet_init(void *tall_ctx, void *priv, int port)
 {
@@ -78,7 +78,7 @@ int telnet_init(void *tall_ctx, void *priv, int port)
  *  \param[in] tall_ctx \ref talloc context
  *  \param[in] priv private data to be passed to callback
  *  \param[in] ip IP to listen to ('::1' for localhost, '::0' for all, ...)
- *  \param[in] port UDP port number
+ *  \param[in] port TCP port number to bind to
  */
 int telnet_init_dynif(void *tall_ctx, void *priv, const char *ip, int port)
 {
@@ -101,9 +101,21 @@ int telnet_init_dynif(void *tall_ctx, void *priv, const char *ip, int port)
 		return -1;
 	}
 
-	LOGP(DLGLOBAL, LOGL_NOTICE, "telnet at %s %d\n", ip, port);
+	LOGP(DLGLOBAL, LOGL_NOTICE, "Available via telnet %s %d\n", ip, port);
 	return 0;
 }
+
+/*! Initializes telnet based VTY interface using the configured bind addr/port.
+ *  \param[in] tall_ctx \ref talloc context
+ *  \param[in] priv private data to be passed to callback
+ *  \param[in] default_port TCP port number to bind to if not explicitely configured
+ */
+int telnet_init_default(void *tall_ctx, void *priv, int default_port)
+{
+	return telnet_init_dynif(tall_ctx, priv, vty_get_bind_addr(),
+				 vty_get_bind_port(default_port));
+}
+
 
 extern struct host host;
 
@@ -177,7 +189,7 @@ static int telnet_new_connection(struct osmo_fd *fd, unsigned int what)
 	connection->vty = vty_create(new_connection, connection);
 	if (!connection->vty) {
 		LOGP(0, LOGL_ERROR, "couldn't create VTY\n");
-		close(new_connection);
+		/* vty_create() is already closing the fd if it returns NULL */
 		talloc_free(connection);
 		return -1;
 	}

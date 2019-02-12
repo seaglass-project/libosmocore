@@ -25,9 +25,49 @@
 
 #include <stdint.h>
 
+#include <osmocom/core/endian.h>
+
 /*! \addtogroup rsl
  *  @{
  * \file gsm_08_58.h */
+
+/* Channel Number 9.3.1 */
+union abis_rsl_chan_nr {
+#if OSMO_IS_BIG_ENDIAN
+		uint8_t cbits:5,
+			tn:3;
+#elif OSMO_IS_LITTLE_ENDIAN
+		uint8_t tn:3,
+			cbits:5;
+#endif
+		uint8_t chan_nr;
+} __attribute__ ((packed));
+#define ABIS_RSL_CHAN_NR_CBITS_Bm_ACCHs	0x01
+#define ABIS_RSL_CHAN_NR_CBITS_Lm_ACCHs(ss)	(0x02 + (ss))
+#define ABIS_RSL_CHAN_NR_CBITS_SDCCH4_ACCH(ss)	(0x04 + (ss))
+#define ABIS_RSL_CHAN_NR_CBITS_SDCCH8_ACCH(ss)	(0x08 + (ss))
+#define ABIS_RSL_CHAN_NR_CBITS_BCCH		0x10
+#define ABIS_RSL_CHAN_NR_CBITS_RACH		0x11
+#define ABIS_RSL_CHAN_NR_CBITS_PCH_AGCH	0x12
+#define ABIS_RSL_CHAN_NR_CBITS_OSMO_PDCH	0x18 /*< non-standard, for dyn TS */
+
+/* Link Identifier 9.3.2 */
+union abis_rsl_link_id {
+#if OSMO_IS_BIG_ENDIAN
+		uint8_t cbits:2,
+			na:1,
+			reserved:2,
+			sapi:3;
+#elif OSMO_IS_LITTLE_ENDIAN
+		uint8_t sapi:3,
+			reserved:2,
+			na:1,
+			cbits:2;
+#endif
+		uint8_t link_id;
+} __attribute__ ((packed));
+#define ABIS_RSL_LINK_ID_CBITS_FACCH_SDCCH 0x00
+#define ABIS_RSL_LINK_ID_CBITS_SACCH 0x01
 
 /*! RSL common header */
 struct abis_rsl_common_hdr {
@@ -40,9 +80,15 @@ struct abis_rsl_common_hdr {
 struct abis_rsl_rll_hdr {
 	struct abis_rsl_common_hdr c;
 	uint8_t	ie_chan;	/*!< \ref RSL_IE_CHAN_NR (tag) */
-	uint8_t	chan_nr;	/*!< RSL channel number (value) */
+	union {
+		uint8_t	chan_nr;	 /* API backward compat */
+		union abis_rsl_chan_nr chan_nr_fields; /*!< RSL channel number (value) */
+	};
 	uint8_t	ie_link_id;	/*!< \ref RSL_IE_LINK_IDENT (tag) */
-	uint8_t	link_id;	/*!< RSL link identifier (value) */
+	union {
+		uint8_t	link_id; /* API backward compat */
+		union abis_rsl_link_id link_id_fields; /*!< RSL link identifier (value) */
+	};
 	uint8_t	data[0];	/*!< message payload data */
 } __attribute__ ((packed));
 
@@ -50,7 +96,10 @@ struct abis_rsl_rll_hdr {
 struct abis_rsl_dchan_hdr {
 	struct abis_rsl_common_hdr c;
 	uint8_t	ie_chan;	/*!< \ref RSL_IE_CHAN_NR (tag) */
-	uint8_t	chan_nr;	/*!< RSL channel number (value) */
+	union {
+		uint8_t	chan_nr;	 /* API backward compat */
+		union abis_rsl_chan_nr chan_nr_fields; /*!< RSL channel number (value) */
+	};
 	uint8_t	data[0];	/*!< message payload data */
 } __attribute__ ((packed));
 
@@ -58,7 +107,10 @@ struct abis_rsl_dchan_hdr {
 struct abis_rsl_cchan_hdr {
 	struct abis_rsl_common_hdr c;
 	uint8_t	ie_chan;	/*!< \ref RSL_IE_CHAN_NR (tag) */
-	uint8_t	chan_nr;	/*!< RSL channel number (value) */
+	union {
+		uint8_t	chan_nr;	 /* API backward compat */
+		union abis_rsl_chan_nr chan_nr_fields; /*!< RSL channel number (value) */
+	};
 	uint8_t	data[0];	/*!< message payload data */
 } __attribute__ ((packed));
 
@@ -542,10 +594,15 @@ struct rsl_ie_chan_ident {
 
 /*! RSL Cell Broadcast Command (Chapter 9.3.45) */
 struct rsl_ie_cb_cmd_type {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t last_block:2;
 	uint8_t spare:1;
 	uint8_t def_bcast:1;
 	uint8_t command:4;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianess.py) */
+	uint8_t command:4, def_bcast:1, spare:1, last_block:2;
+#endif
 } __attribute__ ((packed));
 /* ->command */
 #define RSL_CB_CMD_TYPE_NORMAL		0x00
@@ -680,14 +737,21 @@ enum rsl_ipac_embedded_ie {
 };
 
 struct ipac_preproc_ave_cfg {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t h_reqave:5,
 		param_id:2,
 		reserved:1;
 	uint8_t h_reqt:5,
 		ave_method:3;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianess.py) */
+	uint8_t reserved:1, param_id:2, h_reqave:5;
+	uint8_t ave_method:3, h_reqt:5;
+#endif
 }__attribute__ ((packed));
 
 struct ipac_preproc_ho_thresh {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t l_rxlev_ul_h:6,
 		reserved_l_rxlev_ul:2;
 	uint8_t l_rxlev_dl_h:6,
@@ -702,9 +766,19 @@ struct ipac_preproc_ho_thresh {
 		reserved_rxqual_dl:1;
 	uint8_t ms_range_max:6,
 		reserved_ms_range:2;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianess.py) */
+	uint8_t reserved_l_rxlev_ul:2, l_rxlev_ul_h:6;
+	uint8_t reserved_l_rxlev_dl:2, l_rxlev_dl_h:6;
+	uint8_t reserved_rxlev_ul:2, rxlev_ul_ih:6;
+	uint8_t reserved_rxlev_dl:2, rxlev_dl_ih:6;
+	uint8_t reserved_rxqual_dl:1, l_rxqual_dl_h:3, reserved_rxlqual_ul:1, l_rxqual_ul_h:3;
+	uint8_t reserved_ms_range:2, ms_range_max:6;
+#endif
 }__attribute__ ((packed));
 
 struct ipac_preproc_ho_comp {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t p5:5,
 		reserved_p5:3;
 	uint8_t n5:5,
@@ -725,30 +799,61 @@ struct ipac_preproc_ho_comp {
 		reserved_ho:3;
 	uint8_t reserved;
 
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianess.py) */
+	uint8_t reserved_p5:3, p5:5;
+	uint8_t reserved_n5:3, n5:5;
+	uint8_t reserved_p6:3, p6:5;
+	uint8_t reserved_n6:3, n6:5;
+	uint8_t reserved_p7:3, p7:5;
+	uint8_t reserved_n7:3, n7:5;
+	uint8_t reserved_p8:3, p8:5;
+	uint8_t reserved_n8:3, n8:5;
+	uint8_t reserved_ho:3, ho_interval:5;
+	uint8_t reserved;
+#endif
 }__attribute__ ((packed));
 
 struct ipac_preproc_ho_candidates {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t bsic:6,
 		reserved0:2;
 	uint8_t bcch_freq:5,
 		ba_used:1,
 		s:1,
 		reserved1:1;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianess.py) */
+	uint8_t reserved0:2, bsic:6;
+	uint8_t reserved1:1, s:1, ba_used:1, bcch_freq:5;
+#endif
 }__attribute__ ((packed));
 
 struct ipac_preproc_ncell_dflts {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t rxlev_min_def:6,
 		reserved_rxlev_min_def:2;
 	uint8_t ho_margin_def:5,
 		reserved_ho_margin_def:3;
 	uint8_t ms_txpwr_max_def:5,
 		reserved_ms_txpwr_max_def:3;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianess.py) */
+	uint8_t reserved_rxlev_min_def:2, rxlev_min_def:6;
+	uint8_t reserved_ho_margin_def:3, ho_margin_def:5;
+	uint8_t reserved_ms_txpwr_max_def:3, ms_txpwr_max_def:5;
+#endif
 }__attribute__ ((packed));
 
 struct ipac_preproc_ho_ctl_param {
+#if OSMO_IS_LITTLE_ENDIAN
 	uint8_t sdcch_ho_gsm:1,
 		sdcch_ho_umts:1,
 		reserved:6;
+#elif OSMO_IS_BIG_ENDIAN
+/* auto-generated from the little endian part above (libosmocore/contrib/struct_endianess.py) */
+	uint8_t reserved:6, sdcch_ho_umts:1, sdcch_ho_gsm:1;
+#endif
 }__attribute__ ((packed));
 
 struct ipac_preproc_cfg {

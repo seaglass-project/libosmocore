@@ -90,6 +90,8 @@ char *vty_cwd = NULL;
  * use NULL and VTY_BIND_ADDR_DEFAULT instead. */
 static const char *vty_bind_addr = NULL;
 #define VTY_BIND_ADDR_DEFAULT "127.0.0.1"
+/* Port the VTY should bind to. -1 means not configured */
+static int vty_bind_port = -1;
 
 /* Configure lock. */
 static int vty_config;
@@ -221,8 +223,10 @@ void vty_close(struct vty *vty)
 	vector_unset(vtyvec, vty->fd);
 
 	/* Close socket. */
-	if (vty->fd > 0)
+	if (vty->fd > 0) {
 		close(vty->fd);
+		vty->fd = -1;
+	}
 
 	if (vty->buf) {
 		talloc_free(vty->buf);
@@ -245,26 +249,19 @@ int vty_shell(struct vty *vty)
 	return vty->type == VTY_SHELL ? 1 : 0;
 }
 
-
-/*! VTY standard output function
- *  \param[in] vty VTY to which we should print
- *  \param[in] format variable-length format string
- */
-int vty_out(struct vty *vty, const char *format, ...)
+int vty_out_va(struct vty *vty, const char *format, va_list ap)
 {
-	va_list args;
 	int len = 0;
 	int size = 1024;
 	char buf[1024];
 	char *p = NULL;
 
 	if (vty_shell(vty)) {
-		va_start(args, format);
-		vprintf(format, args);
-		va_end(args);
+		vprintf(format, ap);
 	} else {
+		va_list args;
 		/* Try to write to initial buffer.  */
-		va_start(args, format);
+		va_copy(args, ap);
 		len = vsnprintf(buf, sizeof buf, format, args);
 		va_end(args);
 
@@ -280,7 +277,7 @@ int vty_out(struct vty *vty, const char *format, ...)
 				if (!p)
 					return -1;
 
-				va_start(args, format);
+				va_copy(args, ap);
 				len = vsnprintf(p, size, format, args);
 				va_end(args);
 
@@ -304,6 +301,20 @@ int vty_out(struct vty *vty, const char *format, ...)
 	vty_event(VTY_WRITE, vty->fd, vty);
 
 	return len;
+}
+
+/*! VTY standard output function
+ *  \param[in] vty VTY to which we should print
+ *  \param[in] format variable-length format string
+ */
+int vty_out(struct vty *vty, const char *format, ...)
+{
+	va_list args;
+	int rc;
+	va_start(args, format);
+	rc = vty_out_va(vty, format, args);
+	va_end(args);
+	return rc;
 }
 
 /*! print a newline on the given VTY */
@@ -1213,24 +1224,6 @@ static void vty_stop_input(struct vty *vty)
 	vty->cp = vty->length = 0;
 	vty_clear_buf(vty);
 	vty_out(vty, "%s", VTY_NEWLINE);
-
-	switch (vty->node) {
-	case VIEW_NODE:
-	case ENABLE_NODE:
-		/* Nothing to do. */
-		break;
-	case CONFIG_NODE:
-	case VTY_NODE:
-		vty_config_unlock(vty);
-		vty->node = ENABLE_NODE;
-		break;
-	case CFG_LOG_NODE:
-		vty->node = CONFIG_NODE;
-		break;
-	default:
-		/* Unknown node, we have to ignore it. */
-		break;
-	}
 	vty_prompt(vty);
 
 	/* Set history pointer to the latest one. */
@@ -1506,7 +1499,7 @@ vty_create (int vty_sock, void *priv)
 {
   struct vty *vty;
 
-	struct termios t;
+	struct termios t = {};
 
 	tcgetattr(vty_sock, &t);
 	cfmakeraw(&t);
@@ -1610,12 +1603,14 @@ DEFUN(no_vty_login,
 }
 
 /* vty bind */
-DEFUN(vty_bind, vty_bind_cmd, "bind A.B.C.D",
+DEFUN(vty_bind, vty_bind_cmd, "bind A.B.C.D [<0-65535>]",
       "Accept VTY telnet connections on local interface\n"
-      "Local interface IP address (default: " VTY_BIND_ADDR_DEFAULT ")\n")
+      "Local interface IP address (default: " VTY_BIND_ADDR_DEFAULT ")\n"
+      "Local TCP port number\n")
 {
 	talloc_free((void*)vty_bind_addr);
 	vty_bind_addr = talloc_strdup(tall_vty_ctx, argv[0]);
+	vty_bind_port = argc > 1 ? atoi(argv[1]) : -1;
 	return CMD_SUCCESS;
 }
 
@@ -1624,6 +1619,13 @@ const char *vty_get_bind_addr(void)
 	if (!vty_bind_addr)
 		return VTY_BIND_ADDR_DEFAULT;
 	return vty_bind_addr;
+}
+
+int vty_get_bind_port(int default_port)
+{
+	if (vty_bind_port >= 0)
+		return vty_bind_port;
+	return default_port;
 }
 
 DEFUN(service_advanced_vty,
@@ -1694,10 +1696,18 @@ static int vty_config_write(struct vty *vty)
 	/* login */
 	if (!password_check)
 		vty_out(vty, " no login%s", VTY_NEWLINE);
+	else
+		vty_out(vty, " login%s", VTY_NEWLINE);
 
 	/* bind */
-	if (vty_bind_addr && (strcmp(vty_bind_addr, VTY_BIND_ADDR_DEFAULT) != 0))
-		vty_out(vty, " bind %s%s", vty_bind_addr, VTY_NEWLINE);
+	if (vty_bind_addr && (strcmp(vty_bind_addr, VTY_BIND_ADDR_DEFAULT) != 0 || vty_bind_port >= 0)) {
+		if (vty_bind_port >= 0) {
+			vty_out(vty, " bind %s %d%s", vty_bind_addr,
+				vty_bind_port, VTY_NEWLINE);
+		} else {
+			vty_out(vty, " bind %s%s", vty_bind_addr, VTY_NEWLINE);
+		}
+	}
 
 	vty_out(vty, "!%s", VTY_NEWLINE);
 
@@ -1765,8 +1775,6 @@ void vty_init_vtysh(void)
 {
 	vtyvec = vector_init(VECTOR_MIN_SIZE);
 }
-
-extern void *tall_bsc_ctx;
 
 /*! Initialize VTY layer
  *  \param[in] app_info application information

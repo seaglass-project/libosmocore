@@ -68,6 +68,25 @@ struct osmo_stats_reporter *osmo_stats_reporter_create_statsd(const char *name)
 	return srep;
 }
 
+/*! Replace all illegal ':' in the stats name, but not when used as value seperator.
+ *  ':' is used as seperator between the name and the value in the statsd protocol.
+ *  \param[inout] buf is a null terminated string containing name, value, unit. */
+static void osmo_stats_reporter_sanitize_name(char *buf)
+{
+	/* e.g. msc.loc_update_type:normal:1|c -> msc.loc_update_type.normal:1|c
+	 * last is the seperator between name and value */
+	char *last = strrchr(buf, ':');
+	char *tmp = strchr(buf, ':');
+
+	if (!last)
+		return;
+
+	while (tmp < last) {
+		*tmp = '.';
+		tmp = strchr(buf, ':');
+	}
+}
+
 static int osmo_stats_reporter_statsd_send(struct osmo_stats_reporter *srep,
 	const char *name1, unsigned int index1, const char *name2, int64_t value,
 	const char *unit)
@@ -134,8 +153,10 @@ static int osmo_stats_reporter_statsd_send(struct osmo_stats_reporter *srep,
 			return -EMSGSIZE;
 	}
 
-	if (nchars > 0)
+	if (nchars > 0) {
+		osmo_stats_reporter_sanitize_name(buf);
 		msgb_trim(srep->buffer, msgb_length(srep->buffer) + nchars);
+	}
 
 	if (!srep->agg_enabled)
 		rc = osmo_stats_reporter_send_buffer(srep);
@@ -163,20 +184,17 @@ static int osmo_stats_reporter_statsd_send_item(struct osmo_stats_reporter *srep
 	const struct osmo_stat_item_group *statg,
 	const struct osmo_stat_item_desc *desc, int64_t value)
 {
-	const char *unit = desc->unit;
-
-	if (unit == OSMO_STAT_ITEM_NO_UNIT) {
-		unit = "g";
-		if (value < 0)
-			osmo_stats_reporter_statsd_send(srep,
+	if (value < 0) {
+		return osmo_stats_reporter_statsd_send(srep,
 				statg->desc->group_name_prefix,
 				statg->idx,
-				desc->name, 0, unit);
+				desc->name, 0, "g");
+	} else {
+		return osmo_stats_reporter_statsd_send(srep,
+			statg->desc->group_name_prefix,
+			statg->idx,
+			desc->name, value, "g");
 	}
-	return osmo_stats_reporter_statsd_send(srep,
-		statg->desc->group_name_prefix,
-		statg->idx,
-		desc->name, value, unit);
 }
 #endif /* !EMBEDDED */
 

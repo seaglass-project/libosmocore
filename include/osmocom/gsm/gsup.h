@@ -40,6 +40,7 @@
 
 #include <stdint.h>
 #include <osmocom/core/msgb.h>
+#include <osmocom/gsm/gsup_sms.h>
 #include <osmocom/gsm/protocol/gsm_23_003.h>
 #include <osmocom/gsm/protocol/gsm_04_08_gprs.h>
 #include <osmocom/crypt/auth.h>
@@ -88,9 +89,34 @@ enum osmo_gsup_iei {
 
 	/*! Supplementary Services payload */
 	OSMO_GSUP_SS_INFO_IE			= 0x35,
+
+	/* SM related IEs (see 3GPP TS 29.002, section 7.6.8) */
+	OSMO_GSUP_SM_RP_MR_IE			= 0x40,
+	OSMO_GSUP_SM_RP_DA_IE			= 0x41,
+	OSMO_GSUP_SM_RP_OA_IE			= 0x42,
+	OSMO_GSUP_SM_RP_UI_IE			= 0x43,
+	OSMO_GSUP_SM_RP_CAUSE_IE		= 0x44,
+	OSMO_GSUP_SM_RP_MMS_IE			= 0x45,
+	OSMO_GSUP_SM_ALERT_RSN_IE		= 0x46,
+
+	OSMO_GSUP_IMEI_IE			= 0x50,
+	OSMO_GSUP_IMEI_RESULT_IE		= 0x51,
+
+	_OSMO_GSUP_IEI_END_MARKER
 };
 
-/*! GSUP message type */
+/*! GSUP message type
+ * Make sure that new messages follow this scheme:
+ * .----------------------------.
+ * | Ending Bits | Category     |
+ * |----------------------------|
+ * | 00          | Request      |
+ * | 01          | Error        |
+ * | 10          | Result       |
+ * | 11          | Other        |
+ * '----------------------------'
+ * Request, Error and Result messages must only differ in these last two bits.
+ */
 enum osmo_gsup_message_type {
 	OSMO_GSUP_MSGT_UPDATE_LOCATION_REQUEST	= 0b00000100,
 	OSMO_GSUP_MSGT_UPDATE_LOCATION_ERROR	= 0b00000101,
@@ -121,6 +147,22 @@ enum osmo_gsup_message_type {
 	OSMO_GSUP_MSGT_PROC_SS_REQUEST		= 0b00100000,
 	OSMO_GSUP_MSGT_PROC_SS_ERROR		= 0b00100001,
 	OSMO_GSUP_MSGT_PROC_SS_RESULT		= 0b00100010,
+
+	OSMO_GSUP_MSGT_MO_FORWARD_SM_REQUEST	= 0b00100100,
+	OSMO_GSUP_MSGT_MO_FORWARD_SM_ERROR	= 0b00100101,
+	OSMO_GSUP_MSGT_MO_FORWARD_SM_RESULT	= 0b00100110,
+
+	OSMO_GSUP_MSGT_MT_FORWARD_SM_REQUEST	= 0b00101000,
+	OSMO_GSUP_MSGT_MT_FORWARD_SM_ERROR	= 0b00101001,
+	OSMO_GSUP_MSGT_MT_FORWARD_SM_RESULT	= 0b00101010,
+
+	OSMO_GSUP_MSGT_READY_FOR_SM_REQUEST	= 0b00101100,
+	OSMO_GSUP_MSGT_READY_FOR_SM_ERROR	= 0b00101101,
+	OSMO_GSUP_MSGT_READY_FOR_SM_RESULT	= 0b00101110,
+
+	OSMO_GSUP_MSGT_CHECK_IMEI_REQUEST	= 0b00110000,
+	OSMO_GSUP_MSGT_CHECK_IMEI_ERROR		= 0b00110001,
+	OSMO_GSUP_MSGT_CHECK_IMEI_RESULT	= 0b00110010,
 };
 
 #define OSMO_GSUP_IS_MSGT_REQUEST(msgt) (((msgt) & 0b00000011) == 0b00)
@@ -140,6 +182,11 @@ enum osmo_gsup_cancel_type {
 enum osmo_gsup_cn_domain {
 	OSMO_GSUP_CN_DOMAIN_PS			= 1,
 	OSMO_GSUP_CN_DOMAIN_CS			= 2,
+};
+
+enum osmo_gsup_imei_result {
+	OSMO_GSUP_IMEI_RESULT_ACK		= 1, /* on wire: 0 */
+	OSMO_GSUP_IMEI_RESULT_NACK		= 2, /* on wire: 1 */
 };
 
 /*! TCAP-like session state */
@@ -207,17 +254,44 @@ struct osmo_gsup_message {
 	/*! Session state \ref osmo_gsup_session_state */
 	enum osmo_gsup_session_state	session_state;
 	/*! Unique session identifier and origination flag.
-         * Encoded only when \ref session_state != 0x00 */
+	 * Encoded only when \ref session_state != 0x00 */
 	uint32_t			session_id;
 
 	/*! ASN.1 encoded MAP payload for Supplementary Services */
 	uint8_t				*ss_info;
 	size_t				ss_info_len;
+
+	/*! SM-RP-MR (see 3GPP TS 29.002, 7.6.1.1), Message Reference.
+	 * Please note that there is no SM-RP-MR in TCAP/MAP! SM-RP-MR
+	 * is usually mapped to TCAP's InvokeID, but we don't need it. */
+	const uint8_t			*sm_rp_mr;
+	/*! SM-RP-DA (see 3GPP TS 29.002, 7.6.8.1), Destination Address */
+	enum osmo_gsup_sms_sm_rp_oda_t	sm_rp_da_type;
+	size_t				sm_rp_da_len;
+	const uint8_t			*sm_rp_da;
+	/*! SM-RP-OA (see 3GPP TS 29.002, 7.6.8.2), Originating Address */
+	enum osmo_gsup_sms_sm_rp_oda_t	sm_rp_oa_type;
+	size_t				sm_rp_oa_len;
+	const uint8_t			*sm_rp_oa;
+	/*! SM-RP-UI (see 3GPP TS 29.002, 7.6.8.4), SMS TPDU */
+	const uint8_t			*sm_rp_ui;
+	size_t				sm_rp_ui_len;
+	/*! SM-RP-Cause value (1 oct.) as per GSM TS 04.11, section 8.2.5.4 */
+	const uint8_t			*sm_rp_cause;
+	/*! SM-RP-MMS (More Messages to Send), section 7.6.8.7 */
+	const uint8_t			*sm_rp_mms;
+	/*! Alert reason (see 3GPP TS 29.002, 7.6.8.8) */
+	enum osmo_gsup_sms_sm_alert_rsn_t	sm_alert_rsn;
+
+	const uint8_t			*imei_enc;
+	size_t				imei_enc_len;
+	enum osmo_gsup_imei_result	imei_result;
 };
 
 int osmo_gsup_decode(const uint8_t *data, size_t data_len,
 		     struct osmo_gsup_message *gsup_msg);
 int osmo_gsup_encode(struct msgb *msg, const struct osmo_gsup_message *gsup_msg);
-int osmo_gsup_get_err_msg_type(enum osmo_gsup_message_type type_in);
+int osmo_gsup_get_err_msg_type(enum osmo_gsup_message_type type_in)
+	OSMO_DEPRECATED("Use OSMO_GSUP_TO_MSGT_ERROR() instead");
 
 /*! @} */

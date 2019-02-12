@@ -193,6 +193,7 @@ void vty_reset (void);
 struct vty *vty_new (void);
 struct vty *vty_create (int vty_sock, void *priv);
 int vty_out (struct vty *, const char *, ...) VTY_PRINTF_ATTRIBUTE(2, 3);
+int vty_out_va(struct vty *vty, const char *format, va_list ap);
 int vty_out_newline(struct vty *);
 int vty_read(struct vty *vty);
 //void vty_time_print (struct vty *, int);
@@ -210,6 +211,8 @@ int vty_go_parent(struct vty *vty);
 
 /* Return IP address passed to the 'line vty'/'bind' command, or "127.0.0.1" */
 const char *vty_get_bind_addr(void);
+/** Returns configured port passed to the 'line vty'/'bind' command or default_port. */
+int vty_get_bind_port(int default_port);
 
 extern void *tall_vty_ctx;
 

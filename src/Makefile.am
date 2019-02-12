@@ -1,7 +1,7 @@
 # This is _NOT_ the library release version, it's an API version.
 # Please read chapter "Library interface versions" of the libtool documentation
 # before making any modifications: https://www.gnu.org/software/libtool/manual/html_node/Versioning.html
-LIBVERSION=10:0:0
+LIBVERSION=12:1:0
 
 AM_CPPFLAGS = -I$(top_srcdir)/include -I$(top_builddir)/include
 AM_CFLAGS = -Wall $(TALLOC_CFLAGS)
@@ -12,7 +12,7 @@ endif
 
 lib_LTLIBRARIES = libosmocore.la
 
-libosmocore_la_LIBADD = $(BACKTRACE_LIB) $(TALLOC_LIBS)
+libosmocore_la_LIBADD = $(BACKTRACE_LIB) $(TALLOC_LIBS) $(LIBRARY_RT)
 libosmocore_la_SOURCES = timer.c timer_gettimeofday.c timer_clockgettime.c \
 			 select.c signal.c msgb.c bits.c \
 			 bitvec.c bitcomp.c counter.c fsm.c \
@@ -23,7 +23,8 @@ libosmocore_la_SOURCES = timer.c timer_gettimeofday.c timer_clockgettime.c \
 			 loggingrb.c crc8gen.c crc16gen.c crc32gen.c crc64gen.c \
 			 macaddr.c stat_item.c stats.c stats_statsd.c prim.c \
 			 conv_acc.c conv_acc_generic.c sercomm.c prbs.c \
-			 isdnhdlc.c
+			 isdnhdlc.c \
+			 tdef.c
 
 if HAVE_SSSE3
 libosmocore_la_SOURCES += conv_acc_sse.c
