@@ -186,6 +186,28 @@ static void test_create_clear_command()
 	msgb_free(msg);
 }
 
+static void test_create_clear_command2()
+{
+	static const uint8_t res[] = { 0x00, 0x04, 0x20, 0x04, 0x01, 0x23 };
+	struct msgb *msg;
+
+	printf("Testing creating Clear Command 2\n");
+	msg = gsm0808_create_clear_command2(0x23, false);
+	VERIFY(msg, res, ARRAY_SIZE(res));
+	msgb_free(msg);
+}
+
+static void test_create_clear_command2_csfb()
+{
+	static const uint8_t res[] = { 0x00, 0x05, 0x20, 0x04, 0x01, 0x23, 0x8F };
+	struct msgb *msg;
+
+	printf("Testing creating Clear Command 2 (CSFB)\n");
+	msg = gsm0808_create_clear_command2(0x23, true);
+	VERIFY(msg, res, ARRAY_SIZE(res));
+	msgb_free(msg);
+}
+
 static void test_create_clear_complete()
 {
 	static const uint8_t res[] = { 0x00, 0x01, 0x21 };
@@ -738,11 +760,12 @@ static void test_enc_dec_lcls()
         }
 
 	if (!osmo_gcr_eq(&lcls_out->gcr, &lcls_in.gcr)) {
-		printf("GCR parsed wrong.\n");
+		printf("GCR parsed wrong:\n\t%s\n\t%s\n", osmo_gcr_dump(lcls_out), osmo_gcr_dump(&lcls_in));
                 abort();
         }
 
-	printf("\tdecoded %d bytes: %s\n", rc, rc == len ? "OK" : "FAIL");
+	printf("\tdecoded %d bytes: %s:\n%s\n", rc, rc == len ? "OK" : "FAIL", osmo_lcls_dump(lcls_out));
+	printf("\t%s\n", osmo_gcr_dump(lcls_out));
 	msgb_free(msg);
 }
 
@@ -2183,27 +2206,94 @@ static bool test_cell_id_list_matching_discrs(bool test_match,
 	return true;
 }
 
+const enum CELL_IDENT cell_ident_discrs[] = {
+	CELL_IDENT_LAC, CELL_IDENT_CI, CELL_IDENT_LAC_AND_CI, CELL_IDENT_LAI_AND_LAC,
+	CELL_IDENT_WHOLE_GLOBAL,
+};
+
+
 static void test_cell_id_list_matching(bool test_match)
 {
 	int i, j;
 	bool ok = true;
 
-	const enum CELL_IDENT discrs[] = {
-		CELL_IDENT_LAC, CELL_IDENT_CI, CELL_IDENT_LAC_AND_CI, CELL_IDENT_LAI_AND_LAC,
-		CELL_IDENT_WHOLE_GLOBAL,
-	};
-
 	printf("\n%s(%s)\n", __func__, test_match ? "test match" : "test mismatch");
 
 	/* Autogenerate Cell ID lists from above dataset, which should match / not match. */
-	for (i = 0; i < ARRAY_SIZE(discrs); i++) {
-		for (j = 0; j < ARRAY_SIZE(discrs); j++)
+	for (i = 0; i < ARRAY_SIZE(cell_ident_discrs); i++) {
+		for (j = 0; j < ARRAY_SIZE(cell_ident_discrs); j++)
 			if (!test_cell_id_list_matching_discrs(test_match,
-							       discrs[i], discrs[j]))
+							       cell_ident_discrs[i], cell_ident_discrs[j]))
 				ok = false;
 	}
 
 	OSMO_ASSERT(ok);
+}
+
+
+static const struct gsm0808_cell_id test_gsm0808_cell_id_to_from_cgi_data[] = {
+	lac_23,
+	lac_42,
+	ci_5,
+	ci_6,
+	lac_ci_23_5,
+	lac_ci_42_6,
+	lai_23_042_23,
+	lai_23_042_42,
+	lai_23_99_23,
+	lai_23_42_23,
+	cgi_23_042_23_5,
+	cgi_23_042_42_6,
+	cgi_23_99_23_5,
+	{ .id_discr = CELL_IDENT_NO_CELL },
+	{ .id_discr = 423 },
+};
+
+static void test_gsm0808_cell_id_to_from_cgi()
+{
+	int i;
+	int j;
+
+	printf("\n%s()\n", __func__);
+
+	for (i = 0; i < ARRAY_SIZE(test_gsm0808_cell_id_to_from_cgi_data); i++) {
+		const struct gsm0808_cell_id *from_cid = &test_gsm0808_cell_id_to_from_cgi_data[i];
+		struct osmo_cell_global_id cgi = {
+			.lai = {
+				.plmn = {
+					.mcc = 777,
+					.mnc = 7,
+					.mnc_3_digits = true,
+				},
+				.lac = 7777,
+			},
+			.cell_identity = 7777,
+		};
+		struct gsm0808_cell_id cid = {};
+		int rc;
+
+		rc = gsm0808_cell_id_to_cgi(&cgi, from_cid);
+		printf("cid %s -> cgi %s", gsm0808_cell_id_name(from_cid), osmo_cgi_name(&cgi));
+
+		if (rc & OSMO_CGI_PART_PLMN)
+			printf(" PLMN");
+		if (rc & OSMO_CGI_PART_LAC)
+			printf(" LAC");
+		if (rc & OSMO_CGI_PART_CI)
+			printf(" CI");
+
+		gsm0808_cell_id_from_cgi(&cid, from_cid->id_discr, &cgi);
+		printf(" -> cid %s\n", gsm0808_cell_id_name(&cid));
+		if (!gsm0808_cell_ids_match(from_cid, &cid, true))
+			printf("      MISMATCH!\n");
+
+		for (j = 0; j < ARRAY_SIZE(cell_ident_discrs); j++) {
+			enum CELL_IDENT discr = cell_ident_discrs[j];
+
+			gsm0808_cell_id_from_cgi(&cid, discr, &cgi);
+			printf("  --> gsm0808_cell_id{%s} = %s\n", gsm0808_cell_id_discr_name(discr), gsm0808_cell_id_name(&cid));
+		}
+	}
 }
 
 int main(int argc, char **argv)
@@ -2219,6 +2309,8 @@ int main(int argc, char **argv)
 	test_create_reset();
 	test_create_reset_ack();
 	test_create_clear_command();
+	test_create_clear_command2();
+	test_create_clear_command2_csfb();
 	test_create_clear_complete();
 	test_create_cipher();
 	test_create_cipher_complete();
@@ -2274,6 +2366,8 @@ int main(int argc, char **argv)
 	test_cell_id_matching();
 	test_cell_id_list_matching(true);
 	test_cell_id_list_matching(false);
+
+	test_gsm0808_cell_id_to_from_cgi();
 
 	printf("Done\n");
 	return EXIT_SUCCESS;

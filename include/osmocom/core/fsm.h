@@ -118,6 +118,7 @@ struct osmo_fsm_inst {
 };
 
 void osmo_fsm_log_addr(bool log_addr);
+void osmo_fsm_log_timeouts(bool log_timeouts);
 
 /*! Log using FSM instance's context, on explicit logging subsystem and level.
  * \param fi  An osmo_fsm_inst.
@@ -193,6 +194,9 @@ void osmo_fsm_log_addr(bool log_addr);
 			    caller_file, caller_line, \
 			    fmt, ## args)
 
+#define OSMO_T_FMT "%c%u"
+#define OSMO_T_FMT_ARGS(T) ((T) >= 0 ? 'T' : 'X'), ((T) >= 0 ? T : -T)
+
 int osmo_fsm_register(struct osmo_fsm *fsm);
 void osmo_fsm_unregister(struct osmo_fsm *fsm);
 struct osmo_fsm *osmo_fsm_find_by_name(const char *name);
@@ -249,6 +253,21 @@ int _osmo_fsm_inst_state_chg(struct osmo_fsm_inst *fi, uint32_t new_state,
 				 __FILE__, __LINE__)
 int _osmo_fsm_inst_state_chg_keep_timer(struct osmo_fsm_inst *fi, uint32_t new_state,
 					const char *file, int line);
+
+/*! perform a state change while keeping the current timer if running, or starting a timer otherwise.
+ *
+ *  This is useful to keep a timeout across several states, but to make sure that some timeout is actually running.
+ *
+ *  This is a macro that calls _osmo_fsm_inst_state_chg_keep_or_start_timer() with the given
+ *  parameters as well as the caller's source file and line number for logging
+ *  purposes. See there for documentation.
+ */
+#define osmo_fsm_inst_state_chg_keep_or_start_timer(fi, new_state, timeout_secs, T) \
+	_osmo_fsm_inst_state_chg_keep_or_start_timer(fi, new_state, timeout_secs, T, \
+						     __FILE__, __LINE__)
+int _osmo_fsm_inst_state_chg_keep_or_start_timer(struct osmo_fsm_inst *fi, uint32_t new_state,
+						 unsigned long timeout_secs, int T,
+						 const char *file, int line);
 
 /*! dispatch an event to an osmocom finite state machine instance
  *

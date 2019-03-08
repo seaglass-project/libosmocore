@@ -205,6 +205,8 @@ gsm0808_dec_cell_id_list;
 gsm0808_dec_cell_id_list2;
 gsm0808_cell_id_list_add;
 gsm0808_cell_id_to_list;
+gsm0808_cell_id_to_cgi;
+gsm0808_cell_id_from_cgi;
 gsm0808_enc_cell_id;
 gsm0808_dec_cell_id;
 gsm0808_cell_id_name;
@@ -247,6 +249,8 @@ gsm29118_create_service_abort_req;
 osmo_enc_gcr;
 osmo_dec_gcr;
 osmo_gcr_eq;
+osmo_gcr_dump;
+osmo_lcls_dump;
 
 gsm0858_rsl_ul_meas_enc;
 
@@ -583,12 +587,12 @@ osmo_rat_type_names;
 osmo_lu_type_names;
 osmo_cm_service_type_names;
 
-osmo_classmark_is_r99;
-osmo_classmark1_is_r99;
-osmo_classmark2_is_r99;
-osmo_classmark_supports_a5;
-osmo_classmark_a5_name;
-osmo_classmark_update;
+osmo_gsm48_classmark_is_r99;
+osmo_gsm48_classmark1_is_r99;
+osmo_gsm48_classmark2_is_r99;
+osmo_gsm48_classmark_supports_a5;
+osmo_gsm48_classmark_a5_name;
+osmo_gsm48_classmark_update;
 
 local: *;
 };

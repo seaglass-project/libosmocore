@@ -28,6 +28,7 @@
 #include <errno.h>
 #include <osmocom/gsm/protocol/gsm_08_08.h>
 #include <osmocom/gsm/gsm48.h>
+#include <osmocom/gsm/gsm0808.h>
 #include <osmocom/gsm/gsm0808_utils.h>
 
 #define IP_V4_ADDR_LEN 4
@@ -589,6 +590,45 @@ int gsm0808_dec_lcls(struct osmo_lcls *lcls, const struct tlv_parsed *tp)
 	lcls->corr_needed = TLVP_PRESENT(tp, GSM0808_IE_LCLS_CORR_NOT_NEEDED) ? false : true;
 
 	return ret;
+}
+
+static char dbuf[256];
+
+/*! Dump LCLS parameters (GCR excluded) into string for printing.
+ *  \param[in] lcls pointer to the struct to print.
+ *  \returns string representation of LCLS or NULL on error. */
+char *osmo_lcls_dump(const struct osmo_lcls *lcls)
+{
+	struct osmo_strbuf s = { .buf = dbuf, .len = 256 };
+
+	if (!lcls)
+		return NULL;
+
+	OSMO_STRBUF_PRINTF(s, "LCLS Config: %s, Control: %s, Correlation-Needed: %u",
+			   gsm0808_lcls_config_name(lcls->config),
+			   gsm0808_lcls_control_name(lcls->control),
+			   lcls->corr_needed);
+
+	return dbuf;
+}
+
+/*! Dump GCR struct into string for printing.
+ *  \param[in] lcls pointer to the struct to print.
+ *  \returns string representation of GCR or NULL on error. */
+char *osmo_gcr_dump(const struct osmo_lcls *lcls)
+{
+	struct osmo_strbuf s = { .buf = dbuf, .len = 256 };
+
+	if (!lcls)
+		return NULL;
+
+	if (lcls->gcr_available) {
+		OSMO_STRBUF_PRINTF(s, "GCR NetID 0x%s, ", osmo_hexdump_nospc(lcls->gcr.net, lcls->gcr.net_len));
+		/* osmo_hexdump() uses static buffers so we can't call it twice withing the same parameter list */
+		OSMO_STRBUF_PRINTF(s, "Node 0x%x, CallRefID 0x%s", lcls->gcr.node, osmo_hexdump_nospc(lcls->gcr.cr, 5));
+	}
+
+	return dbuf;
 }
 
 /*! Encode TS 08.08 Encryption Information IE
@@ -1519,7 +1559,8 @@ bool gsm0808_cell_ids_match(const struct gsm0808_cell_id *id1, const struct gsm0
  * \param[in] list  Cell Identifier list to search in.
  * \param[in] match_nr  Ignore this many matches.
  * \param[in] exact_match  If true, consider as match only if the CELL_IDENT types and all values are identical.
- * \returns -1 if no match is found, list index if a match is found.
+ * \returns -1 if no match is found, list index if a match is found (i.e. rc == 0 means a match was found on the first
+ *           entry).
  */
 int gsm0808_cell_id_matches_list(const struct gsm0808_cell_id *id, const struct gsm0808_cell_id_list2 *list,
 				 unsigned int match_nr, bool exact_match)
@@ -1534,6 +1575,93 @@ int gsm0808_cell_id_matches_list(const struct gsm0808_cell_id *id, const struct 
 		}
 	}
 	return -1;
+}
+
+/*! Copy information from a CGI to form a Cell Identifier of the specified kind.
+ * \param [out] cid  Compose new Cell Identifier here.
+ * \param [in] id_discr  Which kind of Cell Identifier to compose.
+ * \param [in] cgi  Cell Global Identifier to form the Cell Identifier from.
+ */
+void gsm0808_cell_id_from_cgi(struct gsm0808_cell_id *cid, enum CELL_IDENT id_discr,
+			      const struct osmo_cell_global_id *cgi)
+{
+	*cid = (struct gsm0808_cell_id){
+		.id_discr = id_discr,
+	};
+
+	switch (id_discr) {
+	case CELL_IDENT_WHOLE_GLOBAL:
+		cid->id.global = *cgi;
+		return;
+
+	case CELL_IDENT_LAC_AND_CI:
+		cid->id.lac_and_ci = (struct osmo_lac_and_ci_id){
+			.lac = cgi->lai.lac,
+			.ci = cgi->cell_identity,
+		};
+		return;
+
+	case CELL_IDENT_CI:
+		cid->id.ci = cgi->cell_identity;
+		return;
+
+	case CELL_IDENT_LAI:
+		cid->id.lai_and_lac = cgi->lai;
+		return;
+
+	case CELL_IDENT_LAC:
+		cid->id.lac = cgi->lai.lac;
+		return;
+
+	case CELL_IDENT_NO_CELL:
+	case CELL_IDENT_BSS:
+	case CELL_IDENT_UTRAN_PLMN_LAC_RNC:
+	case CELL_IDENT_UTRAN_RNC:
+	case CELL_IDENT_UTRAN_LAC_RNC:
+	default:
+		return;
+	};
+}
+
+/*! Overwrite parts of cgi with values from a Cell Identifier.
+ * Place only those items given in cid into cgi, leaving other values unchanged.
+ * \param[out] cgi  Cell Global Identity to write to.
+ * \param[in] cid  Cell Identity to read from.
+ * \return a bitmask of items that were set: OSMO_CGI_PART_PLMN | OSMO_CGI_PART_LAC | OSMO_CGI_PART_CI; 0 if nothing was
+ *         written to cgi.
+ */
+int gsm0808_cell_id_to_cgi(struct osmo_cell_global_id *cgi, const struct gsm0808_cell_id *cid)
+{
+	switch (cid->id_discr) {
+	case CELL_IDENT_WHOLE_GLOBAL:
+		*cgi = cid->id.global;
+		return OSMO_CGI_PART_PLMN | OSMO_CGI_PART_LAC | OSMO_CGI_PART_CI;
+
+	case CELL_IDENT_LAC_AND_CI:
+		cgi->lai.lac = cid->id.lac_and_ci.lac;
+		cgi->cell_identity = cid->id.lac_and_ci.ci;
+		return OSMO_CGI_PART_LAC | OSMO_CGI_PART_CI;
+
+	case CELL_IDENT_CI:
+		cgi->cell_identity = cid->id.ci;
+		return OSMO_CGI_PART_CI;
+
+	case CELL_IDENT_LAI:
+		cgi->lai = cid->id.lai_and_lac;
+		return OSMO_CGI_PART_PLMN | OSMO_CGI_PART_LAC;
+
+	case CELL_IDENT_LAC:
+		cgi->lai.lac = cid->id.lac;
+		return OSMO_CGI_PART_LAC;
+
+	case CELL_IDENT_NO_CELL:
+	case CELL_IDENT_BSS:
+	case CELL_IDENT_UTRAN_PLMN_LAC_RNC:
+	case CELL_IDENT_UTRAN_RNC:
+	case CELL_IDENT_UTRAN_LAC_RNC:
+	default:
+		return 0;
+	};
 }
 
 /*! value_string[] for enum CELL_IDENT. */

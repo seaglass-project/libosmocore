@@ -46,6 +46,7 @@
 #include <osmocom/vty/misc.h>
 
 #include "common_vty.h"
+#include "gb_internal.h"
 
 static struct gprs_ns_inst *vty_nsi = NULL;
 
@@ -59,6 +60,7 @@ static const struct value_string gprs_ns_timer_strs[] = {
 	{ 4, "tns-test" },
 	{ 5, "tns-alive" },
 	{ 6, "tns-alive-retries" },
+	{ 7, "tsns-prov" },
 	{ 0, NULL }
 };
 
@@ -198,15 +200,18 @@ static void dump_ns(struct vty *vty, const struct gprs_ns_inst *nsi, bool stats,
 	vty_out(vty, "Encapsulation NS-UDP-IP     Local IP: %s, UDP Port: %u%s",
 		inet_ntoa(ia), vty_nsi->nsip.local_port, VTY_NEWLINE);
 
-	ia.s_addr = osmo_htonl(vty_nsi->frgre.local_ip);
-	vty_out(vty, "Encapsulation NS-FR-GRE-IP  Local IP: %s%s",
-		inet_ntoa(ia), VTY_NEWLINE);
+	if (nsi->frgre.enabled) {
+		ia.s_addr = osmo_htonl(vty_nsi->frgre.local_ip);
+		vty_out(vty, "Encapsulation NS-FR-GRE-IP  Local IP: %s%s", inet_ntoa(ia), VTY_NEWLINE);
+	}
 
 	llist_for_each_entry(nsvc, &nsi->gprs_nsvcs, list) {
 		if (nsvc == nsi->unknown_nsvc)
 			continue;
 		dump_nse(vty, nsvc, stats, persistent_only);
 	}
+
+	gprs_sns_dump_vty(vty, nsi, stats);
 }
 
 DEFUN(show_ns, show_ns_cmd, "show ns",
@@ -552,6 +557,12 @@ DEFUN(nsvc_nsei, nsvc_nsei_cmd,
 
 	if (!nsvc) {
 		vty_out(vty, "No such %s (%u)%s", id_type, id, VTY_NEWLINE);
+		return CMD_WARNING;
+	}
+
+	if (nsvc->nsi->bss_sns_fi) {
+		vty_out(vty, "A NS Instance using the IP Sub-Network doesn't use BLOCK/UNBLOCK/RESET%s",
+			VTY_NEWLINE);
 		return CMD_WARNING;
 	}
 

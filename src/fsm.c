@@ -90,6 +90,7 @@
 
 LLIST_HEAD(osmo_g_fsms);
 static bool fsm_log_addr = true;
+static bool fsm_log_timeouts = false;
 
 /*! specify if FSM instance addresses should be logged or not
  *
@@ -102,6 +103,26 @@ static bool fsm_log_addr = true;
 void osmo_fsm_log_addr(bool log_addr)
 {
 	fsm_log_addr = log_addr;
+}
+
+/*! Enable or disable logging of timeout values for FSM instance state changes.
+ *
+ * By default, state changes are logged by state name only, omitting the timeout. When passing true, each state change
+ * will also log the T number (or Osmocom-specific X number) and the chosen timeout in seconds.
+ * osmo_fsm_inst_state_chg_keep_timer() will log remaining timeout in millisecond precision.
+ *
+ * The default for this is false to reflect legacy behavior. Since various C tests that verify logging output already
+ * existed prior to this option, keeping timeout logging off makes sure that they continue to pass. Particularly,
+ * osmo_fsm_inst_state_chg_keep_timer() may cause non-deterministic logging of remaining timeout values.
+ *
+ * For any program that does not explicitly require deterministic logging output, i.e. anything besides regression tests
+ * involving FSM instances, it is recommended to call osmo_fsm_log_timeouts(true).
+ *
+ * \param[in] log_timeouts  Pass true to log timeouts on state transitions, false to omit timeouts.
+ */
+void osmo_fsm_log_timeouts(bool log_timeouts)
+{
+	fsm_log_timeouts = log_timeouts;
 }
 
 struct osmo_fsm *osmo_fsm_find_by_name(const char *name)
@@ -184,9 +205,9 @@ static void fsm_tmr_cb(void *data)
 {
 	struct osmo_fsm_inst *fi = data;
 	struct osmo_fsm *fsm = fi->fsm;
-	uint32_t T = fi->T;
+	int32_t T = fi->T;
 
-	LOGPFSM(fi, "Timeout of T%u\n", fi->T);
+	LOGPFSM(fi, "Timeout of " OSMO_T_FMT "\n", OSMO_T_FMT_ARGS(fi->T));
 
 	if (fsm->timer_cb) {
 		int rc = fsm->timer_cb(fi);
@@ -436,6 +457,7 @@ static int state_chg(struct osmo_fsm_inst *fi, uint32_t new_state,
 	struct osmo_fsm *fsm = fi->fsm;
 	uint32_t old_state = fi->state;
 	const struct osmo_fsm_state *st = &fsm->states[fi->state];
+	struct timeval remaining;
 
 	/* Limit to 0x7fffffff seconds as explained by
 	 * _osmo_fsm_inst_state_chg()'s API doc. */
@@ -458,12 +480,37 @@ static int state_chg(struct osmo_fsm_inst *fi, uint32_t new_state,
 	if (st->onleave)
 		st->onleave(fi, new_state);
 
-	LOGPFSMSRC(fi, file, line, "state_chg to %s\n",
-		   osmo_fsm_state_name(fsm, new_state));
+	if (fsm_log_timeouts) {
+		if (keep_timer && fi->timer.active) {
+			/* This should always give us a timeout, but just in case the return value indicates error, omit
+			 * logging the remaining time. */
+			if (osmo_timer_remaining(&fi->timer, NULL, &remaining))
+				LOGPFSMSRC(fi, file, line,
+					   "State change to %s (keeping " OSMO_T_FMT ")\n",
+					   osmo_fsm_state_name(fsm, new_state),
+					   OSMO_T_FMT_ARGS(fi->T));
+			else
+				LOGPFSMSRC(fi, file, line,
+					   "State change to %s (keeping " OSMO_T_FMT ", %ld.%03lds remaining)\n",
+					   osmo_fsm_state_name(fsm, new_state),
+					   OSMO_T_FMT_ARGS(fi->T), remaining.tv_sec, remaining.tv_usec / 1000);
+		} else if (timeout_secs)
+			LOGPFSMSRC(fi, file, line, "State change to %s (" OSMO_T_FMT ", %lus)\n",
+				   osmo_fsm_state_name(fsm, new_state),
+				   OSMO_T_FMT_ARGS(T), timeout_secs);
+		else
+			LOGPFSMSRC(fi, file, line, "State change to %s (no timeout)\n",
+				   osmo_fsm_state_name(fsm, new_state));
+	} else {
+		LOGPFSMSRC(fi, file, line, "state_chg to %s\n",
+			   osmo_fsm_state_name(fsm, new_state));
+	}
+
 	fi->state = new_state;
 	st = &fsm->states[new_state];
 
-	if (!keep_timer) {
+	if (!keep_timer
+	    || (keep_timer && !osmo_timer_pending(&fi->timer))) {
 		fi->T = T;
 		if (timeout_secs)
 			osmo_timer_schedule(&fi->timer, timeout_secs, 0);
@@ -498,6 +545,10 @@ static int state_chg(struct osmo_fsm_inst *fi, uint32_t new_state,
  *  timer_cb. If passing timeout_secs == 0, it is recommended to also pass T ==
  *  0, so that fi->T is reset to 0 when no timeout is invoked.
  *
+ *  Positive values for T are considered to be 3GPP spec compliant and appear in
+ *  logging and VTY as "T1234", while negative values are considered to be
+ *  Osmocom specific timers, represented in logging and VTY as "X1234".
+ *
  *  See also osmo_tdef_fsm_inst_state_chg() from the osmo_tdef API, which
  *  provides a unified way to configure and apply GSM style Tnnnn timers to FSM
  *  state transitions.
@@ -512,7 +563,9 @@ static int state_chg(struct osmo_fsm_inst *fi, uint32_t new_state,
  *  \param[in] fi FSM instance whose state is to change
  *  \param[in] new_state The new state into which we should change
  *  \param[in] timeout_secs Timeout in seconds (if !=0), maximum-clamped to 2147483647 seconds.
- *  \param[in] T Timer number (if \ref timeout_secs != 0)
+ *  \param[in] T Timer number, where positive numbers are considered to be 3GPP spec compliant timer numbers and are
+ *               logged as "T1234", while negative numbers are considered Osmocom specific timer numbers logged as
+ *               "X1234".
  *  \param[in] file Calling source file (from osmo_fsm_inst_state_chg macro)
  *  \param[in] line Calling source line (from osmo_fsm_inst_state_chg macro)
  *  \returns 0 on success; negative on error
@@ -547,6 +600,35 @@ int _osmo_fsm_inst_state_chg_keep_timer(struct osmo_fsm_inst *fi, uint32_t new_s
 					const char *file, int line)
 {
 	return state_chg(fi, new_state, true, 0, 0, file, line);
+}
+
+/*! perform a state change while keeping the current timer if running, or starting a timer otherwise.
+ *
+ *  This is useful to keep a timeout across several states, but to make sure that some timeout is actually running.
+ *
+ *  Best invoke via the osmo_fsm_inst_state_chg_keep_or_start_timer() macro which logs the source file where the state
+ *  change was effected. Alternatively, you may pass file as NULL to use the normal file/line indication instead.
+ *
+ *  All changes to the FSM instance state must be made via an osmo_fsm_inst_state_chg_*
+ *  function.  It verifies that the existing state actually permits a
+ *  transition to new_state.
+ *
+ *  \param[in] fi FSM instance whose state is to change
+ *  \param[in] new_state The new state into which we should change
+ *  \param[in] timeout_secs If no timer is running yet, set this timeout in seconds (if !=0), maximum-clamped to
+ *                          2147483647 seconds.
+ *  \param[in] T Timer number, where positive numbers are considered to be 3GPP spec compliant timer numbers and are
+ *               logged as "T1234", while negative numbers are considered Osmocom specific timer numbers logged as
+ *               "X1234".
+ *  \param[in] file Calling source file (from osmo_fsm_inst_state_chg macro)
+ *  \param[in] line Calling source line (from osmo_fsm_inst_state_chg macro)
+ *  \returns 0 on success; negative on error
+ */
+int _osmo_fsm_inst_state_chg_keep_or_start_timer(struct osmo_fsm_inst *fi, uint32_t new_state,
+						 unsigned long timeout_secs, int T,
+						 const char *file, int line)
+{
+	return state_chg(fi, new_state, true, timeout_secs, T, file, line);
 }
 
 /*! dispatch an event to an osmocom finite state machine instance
