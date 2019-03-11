@@ -452,7 +452,7 @@ int osmo_get_rand_id(uint8_t *out, size_t len)
 	if (len > OSMO_MAX_RAND_ID_LEN)
                return -E2BIG;
 #if (!EMBEDDED)
-#if HAVE_GLIBC_GETRANDOM
+#ifdef HAVE_GLIBC_GETRANDOM
 	rc = getrandom(out, len, GRND_NONBLOCK);
 #elif HAVE_DECL_SYS_GETRANDOM
 #pragma message ("Using direct syscall access for getrandom(): consider upgrading to glibc >= 2.25")
